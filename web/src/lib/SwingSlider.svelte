@@ -46,50 +46,7 @@
 		margin-top: 16px;
 		font-size: 0.9rem;
 	}
-	/* Custom slider so the thumb geometry is exact: its center travels from THUMB/2 to
-	   width - THUMB/2, and the tick row is inset by the same amount. */
-	input {
-		--thumb: 14px;
-		-webkit-appearance: none;
-		appearance: none;
-		width: 100%;
-		height: var(--thumb);
-		margin: 0;
-		background: none;
-		cursor: pointer;
-	}
-	input::-webkit-slider-runnable-track {
-		height: 4px;
-		border-radius: 2px;
-		background: var(--border);
-	}
-	input::-moz-range-track {
-		height: 4px;
-		border-radius: 2px;
-		background: var(--border);
-	}
-	input::-webkit-slider-thumb {
-		-webkit-appearance: none;
-		width: var(--thumb);
-		height: var(--thumb);
-		margin-top: calc(2px - var(--thumb) / 2);
-		border-radius: 50%;
-		background: var(--fg);
-		border: 2px solid var(--surface);
-		box-sizing: border-box;
-	}
-	input::-moz-range-thumb {
-		width: var(--thumb);
-		height: var(--thumb);
-		border-radius: 50%;
-		background: var(--fg);
-		border: 2px solid var(--surface);
-		box-sizing: border-box;
-	}
-	input:focus-visible {
-		outline: 2px solid var(--accent);
-		outline-offset: 2px;
-	}
+	/* thumb is 14px (global range style), so ticks are inset by half of it */
 	.ticks {
 		position: relative;
 		height: 30px;

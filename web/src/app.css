@@ -116,3 +116,48 @@ h3 {
 	width: 10px;
 	height: 10px;
 }
+
+/* All sliders: fixed thumb geometry (center travels THUMB/2 .. width - THUMB/2), so tick
+   rows can be aligned exactly by insetting them half a thumb. */
+input[type='range'] {
+	--thumb: 14px;
+	-webkit-appearance: none;
+	appearance: none;
+	width: 100%;
+	height: var(--thumb);
+	margin: 0;
+	background: none;
+	cursor: pointer;
+}
+input[type='range']::-webkit-slider-runnable-track {
+	height: 4px;
+	border-radius: 2px;
+	background: var(--border);
+}
+input[type='range']::-moz-range-track {
+	height: 4px;
+	border-radius: 2px;
+	background: var(--border);
+}
+input[type='range']::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	width: var(--thumb);
+	height: var(--thumb);
+	margin-top: calc(2px - var(--thumb) / 2);
+	border-radius: 50%;
+	background: var(--fg);
+	border: 2px solid var(--surface);
+	box-sizing: border-box;
+}
+input[type='range']::-moz-range-thumb {
+	width: var(--thumb);
+	height: var(--thumb);
+	border-radius: 50%;
+	background: var(--fg);
+	border: 2px solid var(--surface);
+	box-sizing: border-box;
+}
+input[type='range']:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}

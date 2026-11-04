@@ -2,7 +2,7 @@ import { geoArea } from 'd3-geo';
 import { feature as topoFeature } from 'topojson-client';
 import type { Feature, FeatureCollection, Geometry, Polygon, MultiPolygon } from 'geojson';
 import type { Topology } from 'topojson-specification';
-import type { Election, LoadedMap, MapManifest, Region } from './types';
+import type { CellData, Election, LoadedMap, MapManifest, Region } from './types';
 
 const MAX_BYTES = 50 * 1024 * 1024;
 
@@ -101,14 +101,14 @@ export function buildMap(manifest: MapManifest, fc: FeatureCollection<Geometry>,
 
 /** The same map with each region's demShare/votes taken from the given election (null if absent). */
 export function withElection(m: LoadedMap, electionId: string | undefined): LoadedMap {
-	const res = m.elections.find((e) => e.id === electionId)?.results;
+	const el = m.elections.find((e) => e.id === electionId);
 	return {
 		...m,
 		regions: m.regions.map((r) => {
-			const v = res?.[r.id];
+			const v = el?.results[r.id];
 			const d = Number(v?.D), rep = Number(v?.R);
 			const ok = Number.isFinite(d) && Number.isFinite(rep) && d >= 0 && rep >= 0 && d + rep > 0;
-			return { ...r, demShare: ok ? d / (d + rep) : null, votes: ok ? d + rep : 0 };
+			return { ...r, demShare: ok ? d / (d + rep) : null, votes: ok ? d + rep : 0, cells: ok ? el?.cells?.results[r.id] : undefined };
 		})
 	};
 }
@@ -135,10 +135,11 @@ export async function loadPack(id: string): Promise<LoadedMap> {
 		manifest.reportFile ? file(manifest.reportFile).then(JSON.parse) : undefined,
 		manifest.bordersFile ? file(manifest.bordersFile).then((t) => parseGeo(t)) : undefined,
 		Promise.all(
-			(manifest.elections ?? []).map(async ({ file: f, ...meta }) => {
+			(manifest.elections ?? []).map(async ({ file: f, cellsFile, ...meta }) => {
 				const results = JSON.parse(await file(f)).results;
 				if (!results || typeof results !== 'object') throw new Error(`${f}: no results`);
-				return { ...meta, results } as Election;
+				const cells = cellsFile ? (JSON.parse(await file(cellsFile)) as CellData) : undefined;
+				return { ...meta, results, cells } as Election;
 			})
 		)
 	]);

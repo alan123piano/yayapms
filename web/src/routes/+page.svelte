@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 	import AboutPanel from '#lib/AboutPanel.svelte';
 	import CompareTable from '#lib/CompareTable.svelte';
+	import DemographicPanel from '#lib/DemographicPanel.svelte';
 	import Header from '#lib/Header.svelte';
 	import ImportDialog from '#lib/ImportDialog.svelte';
 	import Legend from '#lib/Legend.svelte';
@@ -14,8 +15,9 @@
 	import SwingSlider from '#lib/SwingSlider.svelte';
 	import Tooltip from '#lib/Tooltip.svelte';
 	import {
-		DEFAULT_BRUSH, DEFAULT_ELECTION, DEFAULT_SHADING, SHADINGS, SWING_STOPS, type ShadingId
+		DEFAULT_BRUSH, DEFAULT_ELECTION, DEFAULT_SHADING, DEMO_LIMITS, SHADINGS, SWING_STOPS, type ShadingId
 	} from '#lib/config.ts';
+	import { applyDemographics, emptySwing, isActive, sanitizeSwing } from '#lib/demographics.ts';
 	import { loadPack, withElection } from '#lib/loader.ts';
 	import { coreParties, sanitizeParties } from '#lib/parties.ts';
 	import { outcomeFill } from '#lib/shading.ts';
@@ -29,6 +31,8 @@
 	let currentId = $state('');
 	let election = $state(DEFAULT_ELECTION);
 	let swing = $state(0);
+	/** per-group vote/turnout changes (Voter groups panel) */
+	let demoSwing = $state(emptySwing());
 	let parties = $state<Party[]>(coreParties());
 	/** manual ratings per map id, then region id */
 	let overrides = $state<Record<string, Record<string, Override>>>({});
@@ -42,8 +46,15 @@
 	let loading = $state(false);
 
 	// ---------- derived ----------
-	/** every map with region results taken from the selected election */
-	let maps = $derived(Object.fromEntries(Object.entries(loaded).map(([id, m]) => [id, withElection(m, election)])));
+	/** every map with region results from the selected election, moved by the voter-group swings */
+	let maps = $derived(
+		Object.fromEntries(
+			Object.entries(loaded).map(([id, m]) => [
+				id,
+				applyDemographics(withElection(m, election), m.elections.find((e) => e.id === election)?.cells, demoSwing)
+			])
+		)
+	);
 	let map = $derived(maps[currentId]);
 	let electionInfo = $derived(map?.elections.find((e) => e.id === election));
 	let byId = $derived(Object.fromEntries(parties.map((p) => [p.id, p])) as Record<string, Party>);
@@ -111,6 +122,7 @@
 		if (o) p.set('o', o);
 		if (focusGroup) p.set('focus', focusGroup);
 		if (parties.length > 2) p.set('parties', JSON.stringify(parties.map(({ core, ...rest }) => rest)));
+		if (isActive(demoSwing)) p.set('groups', JSON.stringify(demoSwing));
 		return p.toString();
 	}
 
@@ -118,6 +130,9 @@
 		const m = v.match(/^(D|R|p\d{1,3})([1-4])$/);
 		return m ? { p: m[1], l: Number(m[2]) as Level } : null;
 	}
+
+	/** voter-group swing from the hash; validated once the maps (and their groups) are loaded */
+	let pendingGroups: string | null = null;
 
 	/** apply state from the URL hash; returns the map id it names, if any */
 	function readHash(): string | null {
@@ -135,6 +150,7 @@
 		}
 		if (id) overrides[id] = o;
 		focusGroup = p.get('focus');
+		pendingGroups = p.get('groups');
 		try {
 			const ps = sanitizeParties(JSON.parse(p.get('parties') ?? 'null'));
 			if (ps) parties = ps;
@@ -168,7 +184,11 @@
 		}
 		const first = index.find((m) => m.id === fromHash)?.id ?? index[0]?.id;
 		await Promise.all(index.map((m) => ensure(m.id)));
-		if (first) selectMap(first);
+		if (first) await selectMap(first);
+		const dims = loaded[currentId]?.elections.find((e) => e.cells)?.cells?.dims;
+		if (pendingGroups && dims) {
+			try { demoSwing = sanitizeSwing(JSON.parse(pendingGroups), dims, DEMO_LIMITS); } catch { /* ignore */ }
+		}
 	});
 
 	// ---------- painting ----------
@@ -235,6 +255,10 @@
 			<SeatSummary tally={t} {parties} />
 			{#if hasBaseline}
 				<SwingSlider bind:swing baseline={electionInfo?.label ?? 'baseline'} />
+			{/if}
+			{#if electionInfo?.cells && hasBaseline}
+				<h3>Voter groups</h3>
+				<DemographicPanel regions={map.regions} cells={electionInfo.cells} bind:swing={demoSwing} />
 			{/if}
 			{#if Object.keys(ov).length}
 				<button type="button" class="link" onclick={() => (overrides[currentId] = {})}>clear {Object.keys(ov).length} manual ratings</button>

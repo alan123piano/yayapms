@@ -51,6 +51,12 @@ export const SWING_STOPS = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8, 9, 10, 1
 /** stops that get a clickable label under the bar */
 export const SWING_LABELS = [-20, -10, -5, 0, 5, 10, 20];
 
+// ---------- voter groups (demographic swings) ----------
+/** slider limits: vote swing in margin points, turnout change in % */
+export const DEMO_LIMITS = { vote: 30, turnout: 50 };
+/** tab names for the cell dimensions written by pipeline/cells.py */
+export const DEMO_DIM_LABELS: Record<string, string> = { age: 'Age', race: 'Race', edu: 'Education', sex: 'Gender' };
+
 // ---------- map view ----------
 export const MAP_MAX_ZOOM = 40;
 /** ms after the last pan/zoom event before the crisp redraw */

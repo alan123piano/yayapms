@@ -34,10 +34,21 @@ export interface ElectionRef {
 	source?: string;
 	/** attribution that must be shown when displayed */
 	credit?: string;
+	/** optional demographic cells file: per region, cvap | voters | dem for every cell */
+	cellsFile?: string;
 }
 
-export interface Election extends Omit<ElectionRef, 'file'> {
+/** Demographic cells for one election: cell i is the i-th combination of `dims` in `order`. */
+export interface CellData {
+	dims: Record<string, string[]>;
+	order: string[];
+	/** per region: [cvap x N, voters x N, dem votes x N] for N cells */
+	results: Record<string, number[]>;
+}
+
+export interface Election extends Omit<ElectionRef, 'file' | 'cellsFile'> {
 	results: Record<string, Record<string, number>>;
+	cells?: CellData;
 }
 
 export interface Region {
@@ -49,6 +60,8 @@ export interface Region {
 	demShare: number | null;
 	/** two-party votes in the selected election (weights for averages); 0 if unknown */
 	votes: number;
+	/** demographic cells for the selected election, if available */
+	cells?: number[];
 	feature: Feature<Geometry>;
 }
 

@@ -8,11 +8,16 @@ try {
 	const L = await vite.ssrLoadModule('/src/lib/loader.ts');
 	const S = await vite.ssrLoadModule('/src/lib/sim.ts');
 	const P = await vite.ssrLoadModule('/src/lib/parties.ts');
+	const G = await vite.ssrLoadModule('/src/lib/demographics.ts');
 	const { geoArea, geoAlbersUsa, geoPath } = await import('d3-geo');
 	const load = (id, election) => {
 		const dir = `static/maps/${id}/`;
 		const m = JSON.parse(readFileSync(dir + 'manifest.json', 'utf8'));
-		const elections = m.elections.map(({ file, ...e }) => ({ ...e, results: JSON.parse(readFileSync(dir + file, 'utf8')).results }));
+		const elections = m.elections.map(({ file, cellsFile, ...e }) => ({
+			...e,
+			results: JSON.parse(readFileSync(dir + file, 'utf8')).results,
+			cells: cellsFile ? JSON.parse(readFileSync(dir + cellsFile, 'utf8')) : undefined
+		}));
 		return L.withElection(L.buildMap(m, L.parseGeo(readFileSync(dir + m.file, 'utf8')), { elections }), election);
 	};
 	const expect2020 = { 'us-house-current': 224, 'us-house-fair': 233 }; // from the original pipeline run
@@ -69,14 +74,56 @@ try {
 		assert.equal(S.outcome(r0, S.buildContext(rs, parties, 0, { [r0.id]: { p: 'p2', l: 4 } })).winner, 'p2');
 	}
 
-	// 4. untrusted party configs
+	// 4. voter-group model: cells add up to results; swings move exactly the targeted voters
+	for (const id of ['us-house-current', 'us-house-fair']) {
+		for (const eid of ['pres-2020', 'pres-2024']) {
+			const map = load(id, eid);
+			const cells = map.elections.find((e) => e.id === eid).cells;
+			assert.ok(cells, `${id} ${eid}: cells present`);
+			const labels = G.cellLabels(cells);
+			const n = labels.length;
+			assert.equal(n, 80, 'cell count');
+			for (const r of map.regions) {
+				assert.ok(r.cells, `${id} ${eid} ${r.id}: cells`);
+				let V = 0, D = 0;
+				for (let i = 0; i < n; i++) { V += r.cells[n + i]; D += r.cells[2 * n + i]; }
+				near(V, r.votes, 50, `${r.id} cell voters`);
+				near(D, r.demShare * r.votes, 50, `${r.id} cell Dem votes`);
+			}
+			assert.equal(G.applyDemographics(map, cells, G.emptySwing()), map, 'zero swing is a no-op');
+			const young = { vote: { age: { '18-29': 10 } }, turnout: {} };
+			const out = G.applyDemographics(map, cells, young);
+			let maxErr = 0;
+			for (const [i, r] of map.regions.entries()) {
+				// +10 margin points = +5 points of D share for each young cell, capped at 100%
+				let V = 0, dD = 0;
+				for (let c = 0; c < n; c++) {
+					const vo = r.cells[n + c], de = r.cells[2 * n + c];
+					V += vo;
+					if (labels[c].age === '18-29' && vo > 0) dD += vo * (Math.min(1, de / vo + 0.05) - de / vo);
+				}
+				maxErr = Math.max(maxErr, Math.abs(out.regions[i].demShare - r.demShare - dD / V));
+			}
+			assert.ok(maxErr < 1e-9, `${id} ${eid}: youth swing moves exactly the young voters (err ${maxErr})`);
+			const turn = G.applyDemographics(map, cells, { vote: {}, turnout: { age: { '18-29': 20 } } });
+			const r0 = map.regions[0];
+			let V = 0, Y = 0;
+			for (let c = 0; c < n; c++) { V += r0.cells[n + c]; if (labels[c].age === '18-29') Y += r0.cells[n + c]; }
+			near(turn.regions[0].votes / r0.votes, (V + 0.2 * Y) / V, 1e-6, 'youth turnout +20%');
+			const before = S.tally(map.regions, S.buildContext(map.regions, core, 0, {})).seats.D;
+			const after = S.tally(out.regions, S.buildContext(out.regions, core, 0, {})).seats.D;
+			console.log(`${id} ${eid}: youth +10 -> D seats ${before} -> ${after}`);
+		}
+	}
+
+	// 5. untrusted party configs
 	assert.equal(P.sanitizeParties([{ id: 'D' }]), null, 'needs D and R');
 	assert.equal(P.sanitizeParties([...P.coreParties(), { id: '<img>', name: 'x' }]), null, 'bad id');
 	const s = P.sanitizeParties([...P.coreParties(), { id: 'p1', name: 'x'.repeat(99), color: 'red;background:url(x)', share: 999, fromD: -5, states: ['TX', '"><script>'] }]);
 	assert.equal(s[2].color, '#888888'); assert.equal(s[2].name.length, 40); assert.equal(s[2].share, 60);
 	assert.equal(s[2].fromD, 0); assert.deepEqual(s[2].states, ['TX']);
 
-	// 5. import path
+	// 6. import path
 	const fc = { type: 'FeatureCollection', features: [{ type: 'Feature', properties: { GEOID: 'x', NAME: 'X', G20PREDBID: 10, G20PRERTRU: 5 }, geometry: { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]] } }] };
 	const g = L.guessManifest(fc, 'test');
 	assert.equal(g.manifest.idProperty, 'GEOID');
