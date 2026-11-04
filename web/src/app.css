@@ -6,7 +6,7 @@
 	--border: #dcdcd8;
 	--map-stroke: #ffffff;
 	--border-strong: #3b3d42;
-	--mix-base: #ffffff; /* ratings fade toward white in both themes */
+	--mix-base: #dfe0e3; /* ratings fade toward light gray in both themes */
 	--unrated: #cfd0cc;
 	--danger: #c0262d;
 	--accent: #2560c9;
