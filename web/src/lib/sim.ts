@@ -88,15 +88,15 @@ export function shares(r: Region, ctx: SimContext): Record<string, number> | nul
 	return out;
 }
 
-const UNRATED: Outcome = { winner: null, level: 0, unrated: true, manual: false, shares: null, margin: null };
+const UNRATED: Outcome = { winner: null, level: 1, unrated: true, manual: false, shares: null, margin: null };
 
 export function outcome(r: Region, ctx: SimContext): Outcome {
 	const sh = shares(r, ctx);
 	const ov = ctx.overrides[r.id];
-	if (ov && (ov.p === 'T' || ctx.parties.some((p) => p.id === ov.p))) {
+	if (ov && ctx.parties.some((p) => p.id === ov.p)) {
 		return {
-			winner: ov.p === 'T' ? null : ov.p,
-			level: ov.p === 'T' ? 0 : ov.l,
+			winner: ov.p,
+			level: ov.l,
 			unrated: false,
 			manual: true,
 			shares: sh,
@@ -111,19 +111,17 @@ export function outcome(r: Region, ctx: SimContext): Outcome {
 
 export interface Tally {
 	seats: Record<string, number>;
-	tossup: number;
 	unrated: number;
 	total: number;
 }
 
 export function tally(regions: Region[], ctx: SimContext): Tally {
-	const t: Tally = { seats: {}, tossup: 0, unrated: 0, total: 0 };
+	const t: Tally = { seats: {}, unrated: 0, total: 0 };
 	for (const p of ctx.parties) t.seats[p.id] = 0;
 	for (const r of regions) {
 		const o = outcome(r, ctx);
 		t.total += r.seats;
-		if (o.unrated) t.unrated += r.seats;
-		else if (o.winner === null) t.tossup += r.seats;
+		if (o.unrated || o.winner === null) t.unrated += r.seats;
 		else t.seats[o.winner] = (t.seats[o.winner] ?? 0) + r.seats;
 	}
 	return t;

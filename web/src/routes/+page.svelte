@@ -23,15 +23,15 @@
 	let overrides = $state<Record<string, Record<string, Override>>>({});
 	let focusGroup = $state<string | null>(null);
 	let parties = $state<Party[]>(coreParties());
-	let multiparty = $state(false);
 	let hover = $state<{ r: Region; x: number; y: number } | null>(null);
 	let importing = $state(false);
-	/** YAPMS-style brush: a party id, 'T' (toss-up) or 'auto' */
+	/** YAPMS-style brush: a party id or 'auto' */
 	let brush = $state('D');
 	let error = $state('');
 	let loading = $state(false);
 
-	let active = $derived(multiparty ? parties : parties.filter((p) => p.core));
+	let active = $derived(parties);
+	let twoParty = $derived(parties.length === 2);
 	let byId = $derived(Object.fromEntries(parties.map((p) => [p.id, p])) as Record<string, Party>);
 	let map = $derived(maps[currentId]);
 	let electionInfo = $derived(map?.elections.find((e) => e.id === election));
@@ -50,7 +50,7 @@
 	);
 	// keep the brush valid when parties change
 	$effect(() => {
-		if (brush !== 'T' && brush !== 'auto' && !active.some((p) => p.id === brush)) brush = 'D';
+		if (brush !== 'auto' && !active.some((p) => p.id === brush)) brush = 'D';
 	});
 
 	function ranked(tl: Tally) {
@@ -76,7 +76,7 @@
 			.map((m) => {
 				const rs = m.regions.filter((r) => scope.has(r.group));
 				const c = buildContext(rs, active, swing, overrides[m.manifest.id] ?? {});
-				return { id: m.manifest.id, name: m.manifest.name, t: tally(rs, c), tip: multiparty ? null : tippingSwing(rs) };
+				return { id: m.manifest.id, name: m.manifest.name, t: tally(rs, c), tip: twoParty ? tippingSwing(rs) : null };
 			});
 	});
 	let compareCols = $derived(
@@ -89,21 +89,13 @@
 		const p = new URLSearchParams({ map: currentId, election, swing: String(swing) });
 		if (o) p.set('o', o);
 		if (focusGroup) p.set('focus', focusGroup);
-		if (multiparty) {
-			p.set('mp', '1');
-			p.set('parties', JSON.stringify(parties.map(({ core, ...rest }) => rest)));
-		}
+		if (!twoParty) p.set('parties', JSON.stringify(parties.map(({ core, ...rest }) => rest)));
 		return p.toString();
 	}
 
 	function parseOverride(v: string): Override | null {
-		if (/^-?[0-4]$/.test(v)) {
-			// legacy signed format: +n = D, -n = R, 0 = toss-up
-			const n = Number(v);
-			return n === 0 ? { p: 'T', l: 0 } : { p: n > 0 ? 'D' : 'R', l: Math.abs(n) as Level };
-		}
-		const m = v.match(/^(D|R|T|p\d{1,3})([0-4])$/);
-		return m ? { p: m[1], l: (m[1] === 'T' ? 0 : Number(m[2])) as Level } : null;
+		const m = v.match(/^(D|R|p\d{1,3})([1-4])$/);
+		return m ? { p: m[1], l: Number(m[2]) as Level } : null;
 	}
 
 	function readHash() {
@@ -121,13 +113,10 @@
 		}
 		if (id) overrides[id] = o;
 		focusGroup = p.get('focus');
-		if (p.get('mp') === '1') {
-			multiparty = true;
-			try {
-				const ps = sanitizeParties(JSON.parse(p.get('parties') ?? 'null'));
-				if (ps) parties = ps;
-			} catch { /* ignore malformed */ }
-		}
+		try {
+			const ps = sanitizeParties(JSON.parse(p.get('parties') ?? 'null'));
+			if (ps) parties = ps;
+		} catch { /* ignore malformed */ }
 		return id;
 	}
 
@@ -137,7 +126,7 @@
 	});
 
 	$effect(() => {
-		const snap = JSON.stringify({ parties, multiparty, shading });
+		const snap = JSON.stringify({ parties, shading });
 		try { localStorage.setItem('yayapms.parties.v2', snap); } catch { /* storage unavailable */ }
 	});
 
@@ -146,7 +135,6 @@
 			const saved = JSON.parse(localStorage.getItem('yayapms.parties.v2') ?? 'null');
 			const ps = sanitizeParties(saved?.parties);
 			if (ps) parties = ps;
-			multiparty = saved?.multiparty === true;
 			if (['winner', 'rating', 'margin'].includes(saved?.shading)) shading = saved.shading;
 		} catch { /* ignore */ }
 		const fromHash = readHash(); // hash wins over saved prefs
@@ -194,7 +182,6 @@
 	function pick(r: Region, secondary: boolean) {
 		if (!ctx) return;
 		if (secondary || brush === 'auto') return setOverride(r.id, null);
-		if (brush === 'T') return setOverride(r.id, { p: 'T', l: 0 });
 		const cur = outcome(r, ctx);
 		const level = cur.winner === brush ? cur.level : 0;
 		setOverride(r.id, { p: brush, l: (level <= 1 ? 4 : level - 1) as Level });
@@ -213,15 +200,13 @@
 	function fill(r: Region): string {
 		if (!ctx) return 'var(--unrated)';
 		const o = outcome(r, ctx);
-		if (o.unrated) return 'var(--unrated)';
-		if (o.winner === null) return 'var(--tossup)';
+		if (o.unrated || o.winner === null) return 'var(--unrated)';
 		const c = byId[o.winner]?.color ?? '#888888';
 		return `color-mix(in oklab, ${c} ${strength(o)}%, var(--mix-base))`;
 	}
 
 	function ratingText(o: Outcome): string {
-		if (o.unrated) return 'Unrated';
-		if (o.winner === null) return 'Toss-up';
+		if (o.unrated || o.winner === null) return 'Unrated';
 		return `${RATING_NAMES[o.level]} ${byId[o.winner]?.name ?? o.winner}`;
 	}
 
@@ -248,7 +233,6 @@
 	);
 	let brushes = $derived([
 		...spectrumOrder(active).map((p) => ({ id: p.id, label: p.name, color: p.color, n: t?.seats[p.id] })),
-		{ id: 'T', label: 'Toss-up', color: 'var(--tossup)', n: t?.tossup },
 		{ id: 'auto', label: hasBaseline ? 'Auto (baseline)' : 'Clear', color: 'transparent', n: undefined }
 	]);
 </script>
@@ -324,7 +308,6 @@
 				{#each spectrumOrder(active) as p (p.id)}
 					{#if p.id !== 'R'}<div style:flex-grow={t.seats[p.id] ?? 0} style:background={p.color}></div>{/if}
 				{/each}
-				<div style:flex-grow={t.tossup} style:background="var(--tossup)"></div>
 				<div style:flex-grow={t.unrated} style:background="var(--unrated)"></div>
 				<div style:flex-grow={t.seats.R ?? 0} style:background={byId.R?.color}></div>
 				<span class="majority" style:left="{(majority / t.total) * 100}%"></span>
@@ -336,7 +319,7 @@
 				{/each}
 			</ul>
 			<p class="muted small">
-				{majority} for a majority of {t.total}{t.tossup ? ` · ${t.tossup} toss-up` : ''}{t.unrated ? ` · ${t.unrated} unrated` : ''}
+				{majority} for a majority of {t.total}{t.unrated ? ` · ${t.unrated} unrated` : ''}
 			</p>
 
 			{#if hasBaseline}
@@ -351,7 +334,7 @@
 			{/if}
 
 			<h3>Parties</h3>
-			<PartyPanel bind:parties bind:multiparty {groups} />
+			<PartyPanel bind:parties {groups} />
 
 			{#if comparison.length > 1}
 				<h3>Compare maps</h3>
@@ -360,7 +343,7 @@
 						<tr>
 							<th>Map</th>
 							{#each compareCols as p (p.id)}<th title={p.name}><span class="swatch sm" style:background={p.color}></span></th>{/each}
-							{#if !multiparty}<th title="Uniform swing needed for a {byId.D?.name} majority">Tipping</th>{/if}
+							{#if twoParty}<th title="Uniform swing needed for a {byId.D?.name} majority">Tipping</th>{/if}
 						</tr>
 					</thead>
 					<tbody>
@@ -368,13 +351,13 @@
 							<tr class:current={c.id === currentId}>
 								<td>{c.name}</td>
 								{#each compareCols as p (p.id)}<td>{c.t.seats[p.id] ?? 0}</td>{/each}
-								{#if !multiparty}<td>{c.tip === null ? '—' : fmtMargin(c.tip)}</td>{/if}
+								{#if twoParty}<td>{c.tip === null ? '—' : fmtMargin(c.tip)}</td>{/if}
 							</tr>
 						{/each}
 					</tbody>
 				</table>
 				<p class="muted small">
-					Same swing and parties on every map, limited to states in the current map.{#if !multiparty}
+					Same swing and parties on every map, limited to states in the current map.{#if twoParty}
 						Tipping = D/R swing at which {byId.D?.name}s win a majority.{/if}
 				</p>
 			{/if}
@@ -382,7 +365,7 @@
 			{#if focusGroup && groupTally}
 				<h3>{focusGroup}</h3>
 				<p>
-					{ranked(groupTally).filter((x) => x.n).map((x) => `${x.n} ${x.p.name}`).join(' · ')}{groupTally.tossup ? ` · ${groupTally.tossup} toss-up` : ''} of {groupTally.total}
+					{ranked(groupTally).filter((x) => x.n).map((x) => `${x.n} ${x.p.name}`).join(' · ')} of {groupTally.total}
 				</p>
 				{#if report?.ensemble}
 					<p class="muted small">
@@ -423,7 +406,7 @@
 	<div class="tip" style:left="{hover.x + 14}px" style:top="{hover.y + 14}px">
 		<b>{hover.r.label}</b>
 		{#if o.shares}
-			{#if !multiparty && hover.r.demShare !== null}
+			{#if twoParty && hover.r.demShare !== null}
 				<div>2020: {fmtMargin(margin(hover.r.demShare, 0))}{swing ? ` → ${fmtMargin(margin(hover.r.demShare, swing))}` : ''}</div>
 			{:else}
 				{#each Object.entries(o.shares).sort((a, b) => b[1] - a[1]) as [id, v] (id)}

@@ -75,20 +75,18 @@ export interface Party {
 	states: string[];
 }
 
-/** 0 = toss-up, 1..4 = Tilt, Lean, Likely, Safe */
-export type Level = 0 | 1 | 2 | 3 | 4;
-export const RATING_NAMES: Record<number, string> = {
-	4: 'Safe', 3: 'Likely', 2: 'Lean', 1: 'Tilt', 0: 'Toss-up'
-};
+/** 1..4 = Tilt, Lean, Likely, Safe */
+export type Level = 1 | 2 | 3 | 4;
+export const RATING_NAMES: Record<Level, string> = { 4: 'Safe', 3: 'Likely', 2: 'Lean', 1: 'Tilt' };
 
-/** Manual rating: party id (or 'T' = toss-up) + level */
+/** Manual rating: party id + level */
 export interface Override {
 	p: string;
 	l: Level;
 }
 
 export interface Outcome {
-	/** winning party id, or null for toss-up / unrated */
+	/** winning party id, or null if unrated */
 	winner: string | null;
 	level: Level;
 	unrated: boolean;

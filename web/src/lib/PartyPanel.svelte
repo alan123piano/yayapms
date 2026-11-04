@@ -4,11 +4,10 @@
 
 	interface Props {
 		parties: Party[];
-		multiparty: boolean;
 		/** groups (states) available on the current map, for regional parties */
 		groups: string[];
 	}
-	let { parties = $bindable(), multiparty = $bindable(), groups }: Props = $props();
+	let { parties = $bindable(), groups }: Props = $props();
 
 	let extras = $derived(parties.filter((p) => !p.core));
 	let dParty = $derived(parties.find((p) => p.id === 'D'));
@@ -48,13 +47,7 @@
 	}
 </script>
 
-<div class="mode" role="radiogroup" aria-label="Party system">
-	<button type="button" role="radio" aria-checked={!multiparty} class:active={!multiparty} onclick={() => (multiparty = false)}>Two-party</button>
-	<button type="button" role="radio" aria-checked={multiparty} class:active={multiparty} onclick={() => (multiparty = true)}>Multi-party</button>
-</div>
-
 {#each parties as p (p.id)}
-	{#if p.core || multiparty}
 		<div class="party" class:extra={!p.core}>
 			<div class="row">
 				<input type="color" bind:value={p.color} aria-label="{p.name} color" />
@@ -83,41 +76,21 @@
 				</label>
 			{/if}
 		</div>
-	{/if}
 {/each}
 
-{#if multiparty}
-	<div class="actions">
+<div class="actions">
 		<button type="button" onclick={add} disabled={parties.length >= MAX_PARTIES}>+ Add party</button>
 		<button type="button" onclick={loadPreset}>Load example scenario</button>
 	</div>
-	{#if totalShare > 80}<p class="warn small">National shares add up to {totalShare}%: the big two are nearly gone.</p>{/if}
+{#if totalShare > 80}<p class="warn small">National shares add up to {totalShare}%: the big two are nearly gone.</p>{/if}
+{#if extras.length}
 	<p class="muted small">
 		Each new party wins the same fraction of its source party's voters everywhere it runs (UK-style
 		proportional swing), and each district goes to whoever gets the most votes.
 	</p>
-{:else if extras.length}
-	<p class="muted small">{extras.length} extra parties hidden. Switch to Multi-party to use them.</p>
 {/if}
 
 <style>
-	.mode {
-		display: flex;
-		margin-bottom: 10px;
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		overflow: hidden;
-	}
-	.mode button {
-		flex: 1;
-		border: none;
-		border-radius: 0;
-		padding: 6px;
-	}
-	.mode button.active {
-		background: var(--fg);
-		color: var(--bg);
-	}
 	.party {
 		margin-bottom: 8px;
 	}
