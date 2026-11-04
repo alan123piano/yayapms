@@ -14,8 +14,13 @@
 	/** maps as loaded (raw: large GeoJSON must not be deep-proxied) */
 	let loaded = $state.raw<Record<string, LoadedMap>>({});
 	let election = $state('pres-2020');
-	type Shading = 'winner' | 'rating' | 'margin';
-	let shading = $state<Shading>('rating');
+	const SHADINGS = [
+		{ id: 'solid', label: 'Solid', hint: 'Full color for whoever wins' },
+		{ id: 'tiers', label: 'Tiers', hint: 'Safe / Likely / Lean / Tilt: 15+, 8-15, 3-8, <3 point lead' },
+		{ id: 'gradient', label: 'Gradient', hint: 'Fades smoothly toward a tie; full color at a 25+ point lead' }
+	] as const;
+	type Shading = (typeof SHADINGS)[number]['id'];
+	let shading = $state<Shading>('tiers');
 	/** every map with region results taken from the selected election */
 	let maps = $derived(Object.fromEntries(Object.entries(loaded).map(([id, m]) => [id, withElection(m, election)])));
 	let currentId = $state('');
@@ -135,7 +140,7 @@
 			const saved = JSON.parse(localStorage.getItem('yayapms.parties.v2') ?? 'null');
 			const ps = sanitizeParties(saved?.parties);
 			if (ps) parties = ps;
-			if (['winner', 'rating', 'margin'].includes(saved?.shading)) shading = saved.shading;
+			if (SHADINGS.some((x) => x.id === saved?.shading)) shading = saved.shading;
 		} catch { /* ignore */ }
 		const fromHash = readHash(); // hash wins over saved prefs
 		try {
@@ -191,8 +196,8 @@
 	const LEVEL_PCT = [0, 28, 48, 72, 100];
 	const LEVEL_MARGIN = [0, 1.5, 5.5, 11.5, 20]; // typical margin per rating level, for manual ratings
 	function strength(o: Outcome): number {
-		if (shading === 'winner') return 100;
-		if (shading === 'rating') return LEVEL_PCT[o.level];
+		if (shading === 'solid') return 100;
+		if (shading === 'tiers') return LEVEL_PCT[o.level];
 		const m = o.margin ?? LEVEL_MARGIN[o.level];
 		return 12 + 88 * Math.min(1, Math.abs(m) / 25); // fades toward a tie
 	}
@@ -291,8 +296,8 @@
 			/>
 			<div class="shading" role="radiogroup" aria-label="Shading">
 				<span class="muted small">Shading</span>
-				{#each [['winner', 'Winner'], ['rating', 'Ratings'], ['margin', 'Margin']] as [id, label] (id)}
-					<button type="button" role="radio" aria-checked={shading === id} class:active={shading === id} onclick={() => (shading = id as Shading)}>{label}</button>
+				{#each SHADINGS as x (x.id)}
+					<button type="button" role="radio" aria-checked={shading === x.id} class:active={shading === x.id} title={x.hint} onclick={() => (shading = x.id)}>{x.label}</button>
 				{/each}
 			</div>
 			<p class="muted small">
