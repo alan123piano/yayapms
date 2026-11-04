@@ -317,10 +317,14 @@
 				{#each ranked(t) as { p, n } (p.id)}
 					<li><span class="swatch" style:background={p.color}></span>{p.name}<b>{n}</b></li>
 				{/each}
+				{#if t.unrated}
+					<li title="No result for this election and no manual rating">
+						<span class="swatch" style:background="var(--unrated)"></span>Unrated<b>{t.unrated}</b>
+					</li>
+				{/if}
+				<li class="total">Total<b>{t.total}</b></li>
 			</ul>
-			<p class="muted small">
-				{majority} for a majority of {t.total}{t.unrated ? ` · ${t.unrated} unrated` : ''}
-			</p>
+			<p class="muted small">{majority} for a majority</p>
 
 			{#if hasBaseline}
 				<label class="swing">
@@ -607,6 +611,12 @@
 		align-items: center;
 		gap: 8px;
 		padding: 3px 0;
+	}
+	.results li.total {
+		border-top: 1px solid var(--border);
+		margin-top: 2px;
+		padding-top: 5px;
+		color: var(--muted);
 	}
 	.results b {
 		margin-left: auto;

@@ -27,6 +27,8 @@ TRACTS_URL = "https://www2.census.gov/geo/tiger/GENZ2020/shp/cb_2020_us_tract_50
 BLOCKS_URL = "https://www2.census.gov/geo/tiger/TIGER2020/TABBLOCK20/tl_2020_{fips}_tabblock20.zip"
 # VEST 2020 precinct-level results (Harvard Dataverse, doi:10.7910/DVN/K7760H)
 VEST_DATASET = "doi:10.7910/DVN/K7760H"
+# MEDSL 2024 precinct returns by state (Harvard Dataverse, CC0) - tabular, used for statewide totals
+MEDSL2024_DATASET = "doi:10.7910/DVN/NYTPDU"
 DATAVERSE = "https://dataverse.harvard.edu"
 # NYT 2024 presidential precinct map (github.com/nytimes/presidential-precinct-map-2024).
 # License: NYT C-UDA, non-commercial, credit required.
@@ -85,24 +87,27 @@ def blocks(fips: str) -> Path:
     return download(BLOCKS_URL.format(fips=fips), RAW / "blocks" / f"tl_2020_{fips}_tabblock20.zip")
 
 
-def vest(usps: str) -> Path:
-    """Download VEST 2020 precinct results for a state via the Dataverse file API."""
-    dest = RAW / "vest2020" / f"{usps.lower()}_2020.zip"
+def dataverse_file(dataset: str, folder: str, name: str) -> Path:
+    """Download one file of a Harvard Dataverse dataset by filename (index cached per folder)."""
+    dest = RAW / folder / name
     if dest.exists():
         return dest
-    index = RAW / "vest2020" / "index.json"
+    index = RAW / folder / "index.json"
     if not index.exists():
         index.parent.mkdir(parents=True, exist_ok=True)
-        url = f"{DATAVERSE}/api/datasets/:persistentId/?persistentId={VEST_DATASET}"
+        url = f"{DATAVERSE}/api/datasets/:persistentId/?persistentId={dataset}"
         req = urllib.request.Request(url, headers={"User-Agent": "yayapms-pipeline"})
         with urllib.request.urlopen(req, timeout=60) as r:
             files = json.load(r)["data"]["latestVersion"]["files"]
         index.write_text(json.dumps({f["dataFile"]["filename"]: f["dataFile"]["id"] for f in files}, indent=1))
     ids = json.loads(index.read_text())
-    name = f"{usps.lower()}_2020.zip"
     if name not in ids:
-        raise KeyError(f"VEST has no {name}")
+        raise KeyError(f"{dataset} has no {name}")
     return download(f"{DATAVERSE}/api/access/datafile/{ids[name]}", dest)
+
+
+def vest(usps: str) -> Path:
+    return dataverse_file(VEST_DATASET, "vest2020", f"{usps.lower()}_2020.zip")
 
 
 def nyt2024(usps: str) -> Path:
@@ -128,6 +133,21 @@ def _load_vest2020(usps: str):
     return g.rename(columns={d[0]: "D", r[0]: "R"})[["D", "R", "geometry"]]
 
 
+def _statewide_medsl2024(usps: str) -> tuple[float, float]:
+    """Statewide 2024 presidential D/R totals from MEDSL (excludes under/over-vote rows)."""
+    import pandas as pd
+    lo = usps.lower()
+    try:
+        f = dataverse_file(MEDSL2024_DATASET, "medsl2024", f"2024-{lo}-precinct-general.tab")
+    except KeyError:
+        f = dataverse_file(MEDSL2024_DATASET, "medsl2024", f"2024-{lo}-precinct-general.csv")
+    d = pd.read_csv(f, sep="\t" if f.suffix == ".tab" else ",", dtype=str)
+    d = d[(d.office == "US PRESIDENT") & (d.stage == "GEN")
+          & ~d.candidate.str.upper().isin(["UNDERVOTES", "OVERVOTES", "BLANK", "WRITEIN"])]
+    v = pd.to_numeric(d.votes, errors="coerce").groupby(d.party_simplified).sum()
+    return float(v.get("DEMOCRAT", 0)), float(v.get("REPUBLICAN", 0))
+
+
 def _load_nyt2024(usps: str):
     import geopandas as gpd
     if usps == "AK":  # NYT: absentee/early votes reported district-wide; precinct data unusable
@@ -147,8 +167,10 @@ ELECTIONS = {
         "label": "2024 President",
         "candidates": {"D": "Harris", "R": "Trump"},
         "source": "The New York Times 2024 presidential precinct map, allocated to 2020 census blocks by population. "
-                  "Alaska unavailable; parts of OK and SD missing.",
+                  "Alaska (at-large): statewide MEDSL totals. Parts of OK and SD missing.",
         "credit": "2024 precinct data: The New York Times",
         "load": _load_nyt2024,
+        # used when precinct data is unavailable in an at-large state (statewide total is exact there)
+        "statewide": _statewide_medsl2024,
     },
 }

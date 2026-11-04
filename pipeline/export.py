@@ -59,7 +59,7 @@ def write_pack(pack_id: str, gdf: gpd.GeoDataFrame, manifest: dict, results: dic
         if not res:
             continue
         (out / "elections" / f"{eid}.json").write_text(json.dumps({"results": res}, separators=(",", ":")))
-        meta = {k: v for k, v in ELECTIONS[eid].items() if k != "load"}
+        meta = {k: v for k, v in ELECTIONS[eid].items() if not callable(v)}
         elections.append({"id": eid, "file": f"elections/{eid}.json", **meta})
     manifest = {"file": "districts.geojson", **manifest, "elections": elections}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))

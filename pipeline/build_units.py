@@ -66,33 +66,40 @@ def build_units(usps: str, blocks: gpd.GeoDataFrame) -> None:
 
 def build_election(usps: str, eid: str, blocks: gpd.GeoDataFrame) -> None:
     out = WORK / usps
-    try:
-        prec = ELECTIONS[eid]["load"](usps).to_crs(CRS)
-    except sources.Unavailable as e:
-        print(f"[{usps}] {eid}: skipped ({e})")
-        (out / "votes").mkdir(exist_ok=True)
-        (out / "votes" / f"{eid}.unavailable").write_text(str(e))
-        return
-    prec = prec.reset_index(drop=True)
-    prec["prec_id"] = prec.index
-    prec["geometry"] = prec.geometry.buffer(0)  # repair invalid rings common in precinct files
-    pid = assign_points(blocks, prec, "prec_id")
-
-    ppop = blocks.POP20.groupby(pid).transform("sum")
-    pn = blocks.POP20.groupby(pid).transform("size")
-    w = np.where(ppop > 0, blocks.POP20 / ppop.replace(0, 1), 1 / pn)
-    v = pd.DataFrame({
-        "tract": blocks.tract, "cd": blocks.cd,
-        "D": w * pid.map(prec.D).fillna(0).to_numpy(),
-        "R": w * pid.map(prec.R).fillna(0).to_numpy(),
-    })
-    lost = prec.loc[~prec.prec_id.isin(pid.unique()), ["D", "R"]].sum()
     (out / "votes").mkdir(exist_ok=True)
+    e = ELECTIONS[eid]
+    try:
+        prec = e["load"](usps).to_crs(CRS)
+    except sources.Unavailable as err:
+        if blocks.cd.nunique() != 1 or "statewide" not in e:
+            print(f"[{usps}] {eid}: skipped ({err})")
+            (out / "votes" / f"{eid}.unavailable").write_text(str(err))
+            return
+        # At-large state: the statewide total is the district result; spread by population for tracts.
+        d, r = e["statewide"](usps)
+        w = blocks.POP20 / blocks.POP20.sum()
+        v = pd.DataFrame({"tract": blocks.tract, "cd": blocks.cd, "D": w * d, "R": w * r})
+        print(f"[{usps}] {eid}: precincts unavailable ({err}); using statewide totals D={d:.0f} R={r:.0f}")
+        prec = None
+    if prec is not None:
+        prec = prec.reset_index(drop=True)
+        prec["prec_id"] = prec.index
+        prec["geometry"] = prec.geometry.buffer(0)  # repair invalid rings common in precinct files
+        pid = assign_points(blocks, prec, "prec_id")
+        ppop = blocks.POP20.groupby(pid).transform("sum")
+        pn = blocks.POP20.groupby(pid).transform("size")
+        w = np.where(ppop > 0, blocks.POP20 / ppop.replace(0, 1), 1 / pn)
+        v = pd.DataFrame({
+            "tract": blocks.tract, "cd": blocks.cd,
+            "D": w * pid.map(prec.D).fillna(0).to_numpy(),
+            "R": w * pid.map(prec.R).fillna(0).to_numpy(),
+        })
+        lost = prec.loc[~prec.prec_id.isin(pid.unique()), ["D", "R"]].sum()
+        print(f"[{usps}] {eid}: D={v.D.sum():.0f} R={v.R.sum():.0f} "
+              f"(precincts D={prec.D.sum():.0f} R={prec.R.sum():.0f}; dropped D={lost.D:.0f} R={lost.R:.0f})")
     (out / "current").mkdir(exist_ok=True)
     v.groupby("tract")[["D", "R"]].sum().rename_axis("GEOID").to_csv(out / "votes" / f"{eid}.csv")
     v.groupby("cd")[["D", "R"]].sum().to_csv(out / "current" / f"{eid}.csv")
-    print(f"[{usps}] {eid}: D={v.D.sum():.0f} R={v.R.sum():.0f} "
-          f"(precincts D={prec.D.sum():.0f} R={prec.R.sum():.0f}; dropped D={lost.D:.0f} R={lost.R:.0f})")
 
 
 def pending_done(out, eid: str) -> bool:
