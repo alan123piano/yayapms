@@ -1,13 +1,13 @@
 # yayapms
 #   make setup            install pinned deps (first time only)
-#   make dev              run the app -> http://localhost:5173
+#   make                  run the app -> http://localhost:5173  (same as make dev)
 #   make data             finish any missing states + rebuild map files
 #   make data S="TX NC"   recompute specific states
 #   make audit            supply-chain checks
 
 SHELL := /bin/bash
 .SHELLFLAGS := -euo pipefail -c
-.DEFAULT_GOAL := help
+.DEFAULT_GOAL := dev
 NVM_DIR ?= $(HOME)/.nvm
 NODE := . "$(NVM_DIR)/nvm.sh" >/dev/null && nvm use --silent >/dev/null && cd web &&
 PY := .venv/bin/python
