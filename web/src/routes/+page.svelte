@@ -31,7 +31,7 @@
 	let hover = $state<{ r: Region; x: number; y: number } | null>(null);
 	let importing = $state(false);
 	/** YAPMS-style brush: a party id or 'auto' */
-	let brush = $state('D');
+	let brush = $state('auto');
 	let error = $state('');
 	let loading = $state(false);
 	let headerH = $state(56);
@@ -62,7 +62,7 @@
 	);
 	// keep the brush valid when parties change
 	$effect(() => {
-		if (brush !== 'auto' && !active.some((p) => p.id === brush)) brush = 'D';
+		if (brush !== 'auto' && !active.some((p) => p.id === brush)) brush = 'auto';
 	});
 
 	function ranked(tl: Tally) {
