@@ -34,6 +34,7 @@
 	let brush = $state('D');
 	let error = $state('');
 	let loading = $state(false);
+	let headerH = $state(56);
 
 	let active = $derived(parties);
 	let twoParty = $derived(parties.length === 2);
@@ -253,7 +254,7 @@
 
 <svelte:head><title>yayapms</title></svelte:head>
 
-<header>
+<header bind:clientHeight={headerH}>
 	<h1>yayapms</h1>
 	<label class="pick">Districts
 		<select value={currentId} onchange={(e) => selectMap(e.currentTarget.value)}>
@@ -277,7 +278,7 @@
 
 {#if error}<p class="error banner">{error}</p>{/if}
 
-<main>
+<main style:--header-h="{headerH}px">
 	<section class="map">
 		{#if map}
 			<div class="legend" role="radiogroup" aria-label="Paint with">
@@ -310,8 +311,7 @@
 				{/each}
 			</div>
 			<p class="muted small">
-				Pick a color above, then click districts. Click again to cycle Safe → Likely → Lean → Tilt.
-				Right-click resets a district. Scroll to zoom, drag to pan, Esc to zoom out.
+				Click to paint, again to cycle Safe → Tilt · right-click resets · scroll/drag to zoom/pan · Esc zooms out
 			</p>
 		{/if}
 	</section>
@@ -458,7 +458,7 @@
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 8px 12px;
-		padding: 12px 16px;
+		padding: 8px 16px;
 		border-bottom: 1px solid var(--border);
 	}
 	h1 {
@@ -470,9 +470,25 @@
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) 320px;
 		gap: 16px;
-		padding: 16px;
+		padding: 12px 16px;
 		max-width: 1500px;
 		margin: 0 auto;
+	}
+	/* Side-by-side layout fits one screen: map scaled to the window height, sidebar scrolls itself.
+	   150px = legend + shading row + hint + padding around the map. */
+	@media (min-width: 861px) {
+		main {
+			height: calc(100dvh - var(--header-h));
+		}
+		.map {
+			--map-max-w: calc((100dvh - var(--header-h) - 150px) * 975 / 610);
+			min-height: 0;
+		}
+		aside {
+			overflow-y: auto;
+			min-height: 0;
+			padding-right: 4px;
+		}
 	}
 	@media (max-width: 860px) {
 		main {
@@ -484,7 +500,7 @@
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		color: var(--muted);
-		margin: 20px 0 8px;
+		margin: 14px 0 6px;
 	}
 	.seatbar {
 		position: relative;

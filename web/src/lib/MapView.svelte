@@ -299,6 +299,9 @@
 <style>
 	.wrap {
 		position: relative;
+		width: 100%;
+		max-width: var(--map-max-w, none); /* set by the page so the map fits the window height */
+		margin: 0 auto;
 		border-radius: 8px;
 		overflow: hidden;
 		background: var(--surface);
