@@ -35,6 +35,12 @@
 	let error = $state('');
 	let loading = $state(false);
 	let headerH = $state(56);
+	// measured heights of the rows around the map, so the map can take exactly what's left
+	let legendH = $state(40);
+	let shadingH = $state(30);
+	let hintH = $state(20);
+	// + legend/shading/hint margins (10 + 8 + 6) + main padding (24) + map border (2)
+	let mapChrome = $derived(legendH + shadingH + hintH + 10 + 8 + 6 + 24 + 2);
 
 	let active = $derived(parties);
 	let twoParty = $derived(parties.length === 2);
@@ -279,10 +285,10 @@
 
 {#if error}<p class="error banner">{error}</p>{/if}
 
-<main style:--header-h="{headerH}px">
+<main style:--header-h="{headerH}px" style:--map-chrome="{mapChrome}px">
 	<section class="map">
 		{#if map}
-			<div class="legend" role="radiogroup" aria-label="Paint with">
+			<div class="legend" role="radiogroup" aria-label="Paint with" bind:offsetHeight={legendH}>
 				{#each brushes as b (b.id)}
 					<button
 						type="button"
@@ -305,13 +311,13 @@
 				onhover={(r, x, y) => (hover = r ? { r, x, y } : null)}
 				onunfocus={() => (focusGroup = null)}
 			/>
-			<div class="shading" role="radiogroup" aria-label="Shading">
+			<div class="shading" role="radiogroup" aria-label="Shading" bind:offsetHeight={shadingH}>
 				<span class="muted small">Shading</span>
 				{#each SHADINGS as x (x.id)}
 					<button type="button" role="radio" aria-checked={shading === x.id} class:active={shading === x.id} title={x.hint} onclick={() => (shading = x.id)}>{x.label}</button>
 				{/each}
 			</div>
-			<p class="muted small">
+			<p class="hint muted small" bind:offsetHeight={hintH}>
 				Click to paint, again to cycle Safe → Tilt · right-click resets · scroll/drag to zoom/pan · Esc zooms out
 			</p>
 		{/if}
@@ -478,14 +484,15 @@
 		max-width: 1500px;
 		margin: 0 auto;
 	}
-	/* Side-by-side layout fits one screen: map scaled to the window height, sidebar scrolls itself.
-	   150px = legend + shading row + hint + padding around the map. */
+	/* Side-by-side layout fits one screen: map scaled to the window height minus the measured
+	   rows around it (--map-chrome), sidebar scrolls itself. */
 	@media (min-width: 861px) {
 		main {
 			height: calc(100dvh - var(--header-h));
+			grid-template-rows: minmax(0, 1fr);
 		}
 		.map {
-			--map-max-w: calc((100dvh - var(--header-h) - 150px) * 975 / 610);
+			--map-max-w: calc((100dvh - var(--header-h) - var(--map-chrome)) * 975 / 610);
 			min-height: 0;
 		}
 		aside {
@@ -671,6 +678,9 @@
 		gap: 6px;
 		font-size: 0.85rem;
 		color: var(--muted);
+	}
+	.hint {
+		margin: 6px 0 0;
 	}
 	.shading {
 		display: flex;
