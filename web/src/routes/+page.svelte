@@ -193,13 +193,14 @@
 		setOverride(r.id, { p: brush, l: (level <= 1 ? 4 : level - 1) as Level });
 	}
 
-	// Swing slider: position u in [-1, 1] maps to swing = ±MAX·|u|^CURVE, so the middle of the
-	// bar gives fine control (20% of the way out = ±0.7) and the ends reach ±40.
-	const SWING_MAX = 40;
-	const SWING_CURVE = 2.5;
-	const SWING_TICKS = [-20, -5, -1, 0, 1, 5, 20];
-	const toSwing = (u: number) => Math.round(Math.sign(u) * SWING_MAX * Math.abs(u) ** SWING_CURVE * 10) / 10;
-	const toPos = (s: number) => Math.sign(s) * (Math.abs(s) / SWING_MAX) ** (1 / SWING_CURVE);
+	// Swing slider: discrete stops, evenly spaced on the bar, finer near 0.
+	const STOPS = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 25, 30, 35, 40];
+	const SWING_VALUES = [...STOPS.map((v) => -v).reverse(), 0, ...STOPS];
+	const SWING_MAX = STOPS[STOPS.length - 1];
+	const SWING_LABELS = new Set([-20, -10, -5, 0, 5, 10, 20]);
+	const swingIndex = (s: number) =>
+		SWING_VALUES.reduce((best, v, i) => (Math.abs(v - s) < Math.abs(SWING_VALUES[best] - s) ? i : best), 0);
+	const stopPct = (i: number) => (i / (SWING_VALUES.length - 1)) * 100;
 	const tickLabel = (s: number) => (s === 0 ? '0' : `${s > 0 ? 'D' : 'R'}+${Math.abs(s)}`);
 
 	// Color strength (%) for a result under each shading mode.
@@ -345,16 +346,19 @@
 					<span>D/R swing vs. {electionInfo?.label ?? 'baseline'}: <b>{fmtMargin(swing)}</b></span>
 					<input
 						type="range"
-						min="-1"
-						max="1"
-						step="0.001"
-						value={toPos(swing)}
-						oninput={(e) => (swing = toSwing(Number(e.currentTarget.value)))}
+						min="0"
+						max={SWING_VALUES.length - 1}
+						step="1"
+						value={swingIndex(swing)}
+						oninput={(e) => (swing = SWING_VALUES[Number(e.currentTarget.value)])}
 					/>
 				</label>
 				<div class="ticks">
-					{#each SWING_TICKS as s (s)}
-						<button type="button" style:left="{(toPos(s) + 1) * 50}%" class:on={swing === s} onclick={() => (swing = s)}>{tickLabel(s)}</button>
+					{#each SWING_VALUES as v, i (v)}
+						<span class="dot" class:major={SWING_LABELS.has(v)} style:left="{stopPct(i)}%"></span>
+						{#if SWING_LABELS.has(v)}
+							<button type="button" style:left="{stopPct(i)}%" class:on={swing === v} onclick={() => (swing = v)}>{tickLabel(v)}</button>
+						{/if}
 					{/each}
 				</div>
 			{/if}
@@ -537,6 +541,22 @@
 		height: 30px;
 		margin: 0 8px 4px;
 	}
+	.ticks .dot {
+		position: absolute;
+		top: 0;
+		width: 3px;
+		height: 3px;
+		border-radius: 50%;
+		background: var(--muted);
+		transform: translateX(-50%);
+		opacity: 0.6;
+	}
+	.ticks .dot.major {
+		opacity: 1;
+		width: 1px;
+		height: 6px;
+		border-radius: 0;
+	}
 	.ticks button {
 		position: absolute;
 		top: 0;
@@ -547,15 +567,6 @@
 		font-size: 0.8rem;
 		color: var(--muted);
 		font-variant-numeric: tabular-nums;
-	}
-	.ticks button::before {
-		content: '';
-		position: absolute;
-		top: 0;
-		left: 50%;
-		width: 1px;
-		height: 6px;
-		background: var(--muted);
 	}
 	.ticks button.on {
 		color: var(--fg);
