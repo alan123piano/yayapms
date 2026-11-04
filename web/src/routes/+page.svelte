@@ -15,9 +15,10 @@
 	import SwingSlider from '#lib/SwingSlider.svelte';
 	import Tooltip from '#lib/Tooltip.svelte';
 	import {
-		DEFAULT_BRUSH, DEFAULT_ELECTION, DEFAULT_SHADING, DEMO_LIMITS, SHADINGS, SWING_STOPS, type ShadingId
+		DEFAULT_BRUSH, DEFAULT_ELECTION, DEFAULT_SHADING, DEMO_DIM_LABELS, DEMO_LIMITS, SHADINGS, SWING_STOPS,
+		type ShadingId
 	} from '#lib/config.ts';
-	import { applyDemographics, emptySwing, isActive, sanitizeSwing } from '#lib/demographics.ts';
+	import { applyDemographics, emptySwing, isActive, sanitizeSwing, withAudiences } from '#lib/demographics.ts';
 	import { loadPack, withElection } from '#lib/loader.ts';
 	import { coreParties, sanitizeParties } from '#lib/parties.ts';
 	import { outcomeFill } from '#lib/shading.ts';
@@ -46,13 +47,16 @@
 	let loading = $state(false);
 
 	// ---------- derived ----------
+	/** voter groups that some party appeals to */
+	let audienceKeys = $derived(parties.flatMap((p) => (p.audience ? [p.audience] : [])));
 	/** every map with region results from the selected election, moved by the voter-group swings */
 	let maps = $derived(
 		Object.fromEntries(
-			Object.entries(loaded).map(([id, m]) => [
-				id,
-				applyDemographics(withElection(m, election), m.elections.find((e) => e.id === election)?.cells, demoSwing)
-			])
+			Object.entries(loaded).map(([id, m]) => {
+				const cells = m.elections.find((e) => e.id === election)?.cells;
+				const swung = applyDemographics(withElection(m, election), cells, demoSwing);
+				return [id, withAudiences(swung, cells, demoSwing, audienceKeys)];
+			})
 		)
 	);
 	let map = $derived(maps[currentId]);
@@ -65,6 +69,13 @@
 	let hasBaseline = $derived(!!map?.regions.some((r) => r.demShare !== null));
 	let groupTally = $derived(
 		focusGroup && map && ctx ? tally(map.regions.filter((r) => r.group === focusGroup), ctx) : null
+	);
+	let audienceOptions = $derived(
+		electionInfo?.cells
+			? electionInfo.cells.order.flatMap((dim) =>
+					electionInfo!.cells!.dims[dim].map((group) => ({ dim, group, label: `${DEMO_DIM_LABELS[dim] ?? dim}: ${group}` }))
+				)
+			: []
 	);
 	let report = $derived(
 		focusGroup && map?.report ? (map.report as Record<string, StateReport>)[focusGroup] : undefined
@@ -265,7 +276,7 @@
 			{/if}
 
 			<h3>Parties</h3>
-			<PartyPanel bind:parties {groups} />
+			<PartyPanel bind:parties {groups} audiences={audienceOptions} />
 
 			<CompareTable {maps} {currentId} {parties} {swing} {overrides} />
 

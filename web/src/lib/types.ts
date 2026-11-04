@@ -62,6 +62,8 @@ export interface Region {
 	votes: number;
 	/** demographic cells for the selected election, if available */
 	cells?: number[];
+	/** per voter group ("dim:group"): its share of the region's voters and its D share */
+	audiences?: Record<string, { share: number; dem: number }>;
 	feature: Feature<Geometry>;
 }
 
@@ -86,6 +88,8 @@ export interface Party {
 	fromD: number;
 	/** extras only: groups (states) it contests; empty = everywhere */
 	states: string[];
+	/** extras only: voter group it appeals to; `share` is then % of that group's voters */
+	audience?: { dim: string; group: string };
 }
 
 /** 1..4 = Tilt, Lean, Likely, Safe */

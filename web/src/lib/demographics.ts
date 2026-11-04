@@ -79,6 +79,43 @@ export function applyDemographics(m: LoadedMap, cellData: CellData | undefined, 
 	};
 }
 
+export const audienceKey = (a: { dim: string; group: string }) => `${a.dim}:${a.group}`;
+
+/** Attach each requested group's share of voters and D share (after the swing) to every region. */
+export function withAudiences(
+	m: LoadedMap, cellData: CellData | undefined, s: DemoSwing, keys: { dim: string; group: string }[]
+): LoadedMap {
+	if (!cellData || !keys.length) return m;
+	const labels = cellLabels(cellData);
+	const n = labels.length;
+	const fx = cellEffects(labels, s);
+	return {
+		...m,
+		regions: m.regions.map((r) => {
+			if (!r.cells) return r;
+			let V = 0;
+			const acc: Record<string, { v: number; d: number }> = {};
+			for (const k of keys) acc[audienceKey(k)] = { v: 0, d: 0 };
+			for (let i = 0; i < n; i++) {
+				const cv = r.cells[i], vo = r.cells[n + i], de = r.cells[2 * n + i];
+				if (vo <= 0) continue;
+				const v1 = Math.min(vo * fx[i].mult, cv * 0.995 || vo * fx[i].mult);
+				const q1 = Math.min(1, Math.max(0, de / vo + fx[i].shift));
+				V += v1;
+				for (const k of keys) {
+					if (labels[i][k.dim] !== k.group) continue;
+					const a = acc[audienceKey(k)];
+					a.v += v1;
+					a.d += v1 * q1;
+				}
+			}
+			const audiences: Record<string, { share: number; dem: number }> = {};
+			for (const [k, a] of Object.entries(acc)) audiences[k] = { share: V ? a.v / V : 0, dem: a.v ? a.d / a.v : 0 };
+			return { ...r, audiences };
+		})
+	};
+}
+
 export interface GroupStat {
 	group: string;
 	/** share of all voters (with the swing) */

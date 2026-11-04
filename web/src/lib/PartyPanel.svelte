@@ -7,8 +7,21 @@
 		parties: Party[];
 		/** groups (states) available on the current map, for regional parties */
 		groups: string[];
+		/** voter groups a party can appeal to (empty if the election has no demographic data) */
+		audiences: { dim: string; group: string; label: string }[];
 	}
-	let { parties = $bindable(), groups }: Props = $props();
+	let { parties = $bindable(), groups, audiences }: Props = $props();
+
+	const audienceValue = (p: Party) => (p.audience ? `${p.audience.dim}:${p.audience.group}` : '');
+	function setAudience(p: Party, v: string) {
+		const a = audiences.find((x) => `${x.dim}:${x.group}` === v);
+		p.audience = a ? { dim: a.dim, group: a.group } : undefined;
+	}
+	function shareLabel(p: Party): string {
+		const where = p.states.length ? ` in ${p.states.join(', ')}` : '';
+		if (p.audience) return ` of ${p.audience.group} voters${where}`;
+		return where || ' nationally';
+	}
 
 	let extras = $derived(parties.filter((p) => !p.core));
 	let dParty = $derived(parties.find((p) => p.id === 'D'));
@@ -58,9 +71,18 @@
 				{/if}
 			</div>
 			{#if !p.core}
+				{#if audiences.length}
+					<label>
+						<span>Appeals to</span>
+						<select value={audienceValue(p)} onchange={(e) => setAudience(p, e.currentTarget.value)}>
+							<option value="">Everyone</option>
+							{#each audiences as a (`${a.dim}:${a.group}`)}<option value="{a.dim}:{a.group}">{a.label}</option>{/each}
+						</select>
+					</label>
+				{/if}
 				<label>
-					<span>Vote share <b>{p.share}%</b>{p.states.length ? ` in ${p.states.join(', ')}` : ' nationally'}</span>
-					<input type="range" min="0" max="50" step="1" bind:value={p.share} />
+					<span>Vote share <b>{p.share}%</b>{shareLabel(p)}</span>
+					<input type="range" min="0" max={p.audience ? 100 : 50} step="1" bind:value={p.share} />
 				</label>
 				<label>
 					<span>Draws <b>{drawLabel(p.fromD)}</b></span>

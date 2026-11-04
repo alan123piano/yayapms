@@ -113,6 +113,20 @@ try {
 			const before = S.tally(map.regions, S.buildContext(map.regions, core, 0, {})).seats.D;
 			const after = S.tally(out.regions, S.buildContext(out.regions, core, 0, {})).seats.D;
 			console.log(`${id} ${eid}: youth +10 -> D seats ${before} -> ${after}`);
+
+			// group-targeted party: wins exactly 25% of young voters, nothing else
+			const youth = { id: 'p1', name: 'Youth', color: '#888888', share: 25, fromD: 50, states: [], audience: { dim: 'age', group: '18-29' } };
+			const aud = G.withAudiences(map, cells, G.emptySwing(), [youth.audience]);
+			const ctxY = S.buildContext(aud.regions, [...core, youth], 0, {});
+			for (const r of aud.regions) {
+				const sh = S.shares(r, ctxY);
+				near(Object.values(sh).reduce((x, y) => x + y, 0), 1, 1e-9, 'shares sum with targeted party');
+				const a = r.audiences['age:18-29'];
+				near(sh.p1, 0.25 * a.share, 1e-9, `${r.id}: Youth = 25% of young voters`);
+			}
+			const tx = { ...youth, states: ['TX'] };
+			const ctxT = S.buildContext(aud.regions, [...core, tx], 0, {});
+			assert.ok(aud.regions.every((r) => r.group === 'TX' || !S.shares(r, ctxT).p1), 'targeted party only where it runs');
 		}
 	}
 

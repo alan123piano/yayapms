@@ -1,4 +1,5 @@
 import { RATING_THRESHOLDS as T } from './config';
+import { audienceKey } from './demographics';
 import type { Level, Outcome, Override, Party, Region } from './types';
 
 /** Two-party Dem margin in points after a uniform swing (swing in points, + = toward D). */
@@ -32,6 +33,8 @@ export interface SimContext {
 	parties: Party[];
 	overrides: Record<string, Override>;
 	defections: Defection[];
+	/** parties appealing to one voter group: they win `share` of that group's voters */
+	targeted: { id: string; key: string; share: number; fromD: number; groups: Set<string> | null }[];
 }
 
 function swungDem(r: Region, swing: number): number {
@@ -45,9 +48,14 @@ export function buildContext(
 	overrides: Record<string, Override>
 ): SimContext {
 	const defections: Defection[] = [];
+	const targeted: SimContext['targeted'] = [];
 	for (const p of parties) {
 		if (p.core || !(p.share > 0)) continue;
 		const groups = p.states.length ? new Set(p.states) : null;
+		if (p.audience) {
+			targeted.push({ id: p.id, key: audienceKey(p.audience), share: p.share / 100, fromD: p.fromD / 100, groups });
+			continue;
+		}
 		let v = 0, dv = 0;
 		for (const r of regions) {
 			if (r.demShare === null || !r.votes || (groups && !groups.has(r.group))) continue;
@@ -65,13 +73,29 @@ export function buildContext(
 			groups
 		});
 	}
-	return { swing, parties, overrides, defections };
+	return { swing, parties, overrides, defections, targeted };
 }
 
 export function shares(r: Region, ctx: SimContext): Record<string, number> | null {
 	if (r.demShare === null) return null;
-	const d = swungDem(r, ctx.swing);
-	const rep = 1 - d;
+	let d = swungDem(r, ctx.swing);
+	let rep = 1 - d;
+	// Group-targeted parties first: each wins `share` of its group's voters here. fromD is a
+	// preference for where they come from; if one side runs short, the rest comes from the other.
+	const taken: Record<string, number> = {};
+	for (const t of ctx.targeted) {
+		const a = r.audiences?.[t.key];
+		if (!a || (t.groups && !t.groups.has(r.group))) continue;
+		const gD = a.share * Math.min(1, Math.max(0, a.dem + ctx.swing / 200));
+		const gR = a.share - gD;
+		const want = t.share * a.share;
+		let fromD = Math.min(want * t.fromD, gD, d);
+		const fromR = Math.min(want - fromD, gR, rep);
+		fromD = Math.min(want - fromR, gD, d);
+		d -= fromD;
+		rep -= fromR;
+		taken[t.id] = (taken[t.id] ?? 0) + fromD + fromR;
+	}
 	const here = ctx.defections.filter((x) => !x.groups || x.groups.has(r.group));
 	// If targets are so large that more than all of a party's voters would leave, scale down.
 	const sD = here.reduce((a, x) => a + x.fD, 0);
@@ -83,6 +107,7 @@ export function shares(r: Region, ctx: SimContext): Record<string, number> | nul
 		R: rep * (1 - sR * kR)
 	};
 	for (const x of here) out[x.id] = d * x.fD * kD + rep * x.fR * kR;
+	for (const [id, v] of Object.entries(taken)) out[id] = (out[id] ?? 0) + v;
 	return out;
 }
 

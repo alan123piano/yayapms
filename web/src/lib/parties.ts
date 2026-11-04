@@ -20,6 +20,15 @@ const HEX = /^#[0-9a-f]{6}$/i;
 const ID = /^(D|R|p\d{1,3})$/;
 const GROUP = /^[A-Za-z0-9 _.-]{1,40}$/;
 
+const AUD = /^[A-Za-z0-9 +\-]{1,30}$/;
+function audience(raw: unknown): Party['audience'] {
+	if (!raw || typeof raw !== 'object') return undefined;
+	const { dim, group } = raw as Record<string, unknown>;
+	return typeof dim === 'string' && typeof group === 'string' && AUD.test(dim) && AUD.test(group)
+		? { dim, group }
+		: undefined;
+}
+
 /** Validate untrusted party config (URL hash / localStorage). Returns null if unusable. */
 export function sanitizeParties(raw: unknown): Party[] | null {
 	if (!Array.isArray(raw) || raw.length < 2 || raw.length > MAX_PARTIES) return null;
@@ -40,7 +49,8 @@ export function sanitizeParties(raw: unknown): Party[] | null {
 			fromD: id === 'D' ? 100 : id === 'R' ? 0 : num(p.fromD, 0, 100),
 			states: Array.isArray(p.states)
 				? p.states.filter((s): s is string => typeof s === 'string' && GROUP.test(s)).slice(0, 60)
-				: []
+				: [],
+			audience: audience(p.audience)
 		});
 	}
 	if (!out.some((p) => p.id === 'D') || !out.some((p) => p.id === 'R')) return null;
