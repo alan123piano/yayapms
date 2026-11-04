@@ -21,12 +21,16 @@ const ID = /^(D|R|p\d{1,3})$/;
 const GROUP = /^[A-Za-z0-9 _.-]{1,40}$/;
 
 const AUD = /^[A-Za-z0-9 +\-]{1,30}$/;
+/** Shape-check an untrusted audience filter ({dim: [groups]}); unknown groups simply match nobody. */
 function audience(raw: unknown): Party['audience'] {
-	if (!raw || typeof raw !== 'object') return undefined;
-	const { dim, group } = raw as Record<string, unknown>;
-	return typeof dim === 'string' && typeof group === 'string' && AUD.test(dim) && AUD.test(group)
-		? { dim, group }
-		: undefined;
+	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+	const out: Record<string, string[]> = {};
+	for (const [dim, groups] of Object.entries(raw as Record<string, unknown>).slice(0, 10)) {
+		if (!AUD.test(dim) || !Array.isArray(groups)) return undefined;
+		const gs = groups.filter((g): g is string => typeof g === 'string' && AUD.test(g)).slice(0, 10);
+		if (gs.length) out[dim] = gs;
+	}
+	return Object.keys(out).length ? out : undefined;
 }
 
 /** Validate untrusted party config (URL hash / localStorage). Returns null if unusable. */

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { MAX_PARTIES, NEW_PARTY_COLORS } from './config';
+	import { describe, filterKey, type Filter } from './demographics';
 	import { nextPartyId, presetParties } from './parties';
 	import type { Party } from './types';
 
@@ -8,18 +9,23 @@
 		/** groups (states) available on the current map, for regional parties */
 		groups: string[];
 		/** voter groups a party can appeal to (empty if the election has no demographic data) */
-		audiences: { dim: string; group: string; label: string }[];
+		audiences: { key: string; label: string; filter: Filter }[];
 	}
 	let { parties = $bindable(), groups, audiences }: Props = $props();
 
-	const audienceValue = (p: Party) => (p.audience ? `${p.audience.dim}:${p.audience.group}` : '');
+	const audienceValue = (p: Party) => (p.audience ? filterKey(p.audience) : '');
 	function setAudience(p: Party, v: string) {
-		const a = audiences.find((x) => `${x.dim}:${x.group}` === v);
-		p.audience = a ? { dim: a.dim, group: a.group } : undefined;
+		const a = audiences.find((x) => x.key === v);
+		p.audience = a ? structuredClone($state.snapshot(a.filter)) : undefined;
 	}
+	/** a party's audience is shown even if its custom group was since deleted */
+	const optionsFor = (p: Party) =>
+		p.audience && !audiences.some((a) => a.key === filterKey(p.audience!))
+			? [...audiences, { key: filterKey(p.audience), label: describe(p.audience, Object.keys(p.audience)), filter: p.audience }]
+			: audiences;
 	function shareLabel(p: Party): string {
 		const where = p.states.length ? ` in ${p.states.join(', ')}` : '';
-		if (p.audience) return ` of ${p.audience.group} voters${where}`;
+		if (p.audience) return ` of ${describe(p.audience, Object.keys(p.audience))} voters${where}`;
 		return where || ' nationally';
 	}
 
@@ -76,7 +82,7 @@
 						<span>Appeals to</span>
 						<select value={audienceValue(p)} onchange={(e) => setAudience(p, e.currentTarget.value)}>
 							<option value="">Everyone</option>
-							{#each audiences as a (`${a.dim}:${a.group}`)}<option value="{a.dim}:{a.group}">{a.label}</option>{/each}
+							{#each optionsFor(p) as a (a.key)}<option value={a.key}>{a.label}</option>{/each}
 						</select>
 					</label>
 				{/if}

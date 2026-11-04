@@ -18,7 +18,9 @@
 		DEFAULT_BRUSH, DEFAULT_ELECTION, DEFAULT_SHADING, DEMO_DIM_LABELS, DEMO_LIMITS, SHADINGS, SWING_STOPS,
 		type ShadingId
 	} from '#lib/config.ts';
-	import { applyDemographics, emptySwing, isActive, sanitizeSwing, withAudiences } from '#lib/demographics.ts';
+	import {
+		applyDemographics, describe, emptySwing, filterKey, isActive, sanitizeSwing, withAudiences
+	} from '#lib/demographics.ts';
 	import { loadPack, withElection } from '#lib/loader.ts';
 	import { coreParties, sanitizeParties } from '#lib/parties.ts';
 	import { outcomeFill } from '#lib/shading.ts';
@@ -70,13 +72,21 @@
 	let groupTally = $derived(
 		focusGroup && map && ctx ? tally(map.regions.filter((r) => r.group === focusGroup), ctx) : null
 	);
-	let audienceOptions = $derived(
-		electionInfo?.cells
-			? electionInfo.cells.order.flatMap((dim) =>
-					electionInfo!.cells!.dims[dim].map((group) => ({ dim, group, label: `${DEMO_DIM_LABELS[dim] ?? dim}: ${group}` }))
-				)
-			: []
-	);
+	/** voter groups a party can appeal to: every single group, plus custom groups */
+	let audienceOptions = $derived.by(() => {
+		const c = electionInfo?.cells;
+		if (!c) return [];
+		const single = c.order.flatMap((dim) =>
+			c.dims[dim].map((group) => {
+				const filter = { [dim]: [group] };
+				return { key: filterKey(filter), label: `${DEMO_DIM_LABELS[dim] ?? dim}: ${group}`, filter };
+			})
+		);
+		const custom = demoSwing.segments
+			.filter((g) => g.custom && Object.keys(g.filter).length)
+			.map((g) => ({ key: filterKey(g.filter), label: `Custom: ${describe(g.filter, c.order)}`, filter: g.filter }));
+		return [...single, ...custom.filter((x, k) => custom.findIndex((y) => y.key === x.key) === k)];
+	});
 	let report = $derived(
 		focusGroup && map?.report ? (map.report as Record<string, StateReport>)[focusGroup] : undefined
 	);

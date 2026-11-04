@@ -91,21 +91,34 @@ try {
 				near(D, r.demShare * r.votes, 50, `${r.id} cell Dem votes`);
 			}
 			assert.equal(G.applyDemographics(map, cells, G.emptySwing()), map, 'zero swing is a no-op');
-			const young = { vote: { age: { '18-29': 10 } }, turnout: {} };
-			const out = G.applyDemographics(map, cells, young);
-			let maxErr = 0;
-			for (const [i, r] of map.regions.entries()) {
-				// +10 margin points = +5 points of D share for each young cell, capped at 100%
+			const seg = (f, vote, turnout = 0, sid = G.filterKey(f)) => ({ id: sid.includes('&') || sid.includes('|') ? 'c1' : sid, filter: f, vote, turnout });
+			/** exact expected D-share change per region for a per-cell margin shift (cap at 0..100%) */
+			const expectShift = (shiftOf) => map.regions.map((r) => {
 				let V = 0, dD = 0;
 				for (let c = 0; c < n; c++) {
 					const vo = r.cells[n + c], de = r.cells[2 * n + c];
 					V += vo;
-					if (labels[c].age === '18-29' && vo > 0) dD += vo * (Math.min(1, de / vo + 0.05) - de / vo);
+					const sft = shiftOf(labels[c]) / 200;
+					if (sft && vo > 0) dD += vo * (Math.min(1, Math.max(0, de / vo + sft)) - de / vo);
 				}
-				maxErr = Math.max(maxErr, Math.abs(out.regions[i].demShare - r.demShare - dD / V));
-			}
-			assert.ok(maxErr < 1e-9, `${id} ${eid}: youth swing moves exactly the young voters (err ${maxErr})`);
-			const turn = G.applyDemographics(map, cells, { vote: {}, turnout: { age: { '18-29': 20 } } });
+				return dD / V;
+			});
+			const checkShift = (sw, shiftOf, what) => {
+				const got = G.applyDemographics(map, cells, sw);
+				const exp = expectShift(shiftOf);
+				const err = Math.max(...map.regions.map((r, i) => Math.abs(got.regions[i].demShare - r.demShare - exp[i])));
+				assert.ok(err < 1e-9, `${id} ${eid}: ${what} (err ${err})`);
+				return got;
+			};
+			const young = { segments: [seg({ age: ['18-29'] }, 10)] };
+			const out = checkShift(young, (l) => (l.age === '18-29' ? 10 : 0), 'youth swing moves exactly the young voters');
+			checkShift({ segments: [seg({ age: ['18-29'], sex: ['Men'] }, 10)] },
+				(l) => (l.age === '18-29' && l.sex === 'Men' ? 10 : 0), 'young-men swing moves only young men');
+			checkShift({ segments: [seg({ age: ['18-29'] }, 10), { ...seg({ age: ['18-29'], sex: ['Men'] }, -10), id: 'c2' }] },
+				(l) => (l.age === '18-29' && l.sex === 'Women' ? 10 : 0), 'stacked: young men net zero, young women +10');
+			checkShift({ segments: [seg({ age: ['18-29', '30-44'] }, 6)] },
+				(l) => (['18-29', '30-44'].includes(l.age) ? 6 : 0), '"or" within a dimension');
+			const turn = G.applyDemographics(map, cells, { segments: [seg({ age: ['18-29'] }, 0, 20)] });
 			const r0 = map.regions[0];
 			let V = 0, Y = 0;
 			for (let c = 0; c < n; c++) { V += r0.cells[n + c]; if (labels[c].age === '18-29') Y += r0.cells[n + c]; }
@@ -115,20 +128,33 @@ try {
 			console.log(`${id} ${eid}: youth +10 -> D seats ${before} -> ${after}`);
 
 			// group-targeted party: wins exactly 25% of young voters, nothing else
-			const youth = { id: 'p1', name: 'Youth', color: '#888888', share: 25, fromD: 50, states: [], audience: { dim: 'age', group: '18-29' } };
+			const youth = { id: 'p1', name: 'Youth', color: '#888888', share: 25, fromD: 50, states: [], audience: { sex: ['Men'], age: ['18-29'] } };
 			const aud = G.withAudiences(map, cells, G.emptySwing(), [youth.audience]);
 			const ctxY = S.buildContext(aud.regions, [...core, youth], 0, {});
 			for (const r of aud.regions) {
 				const sh = S.shares(r, ctxY);
 				near(Object.values(sh).reduce((x, y) => x + y, 0), 1, 1e-9, 'shares sum with targeted party');
-				const a = r.audiences['age:18-29'];
-				near(sh.p1, 0.25 * a.share, 1e-9, `${r.id}: Youth = 25% of young voters`);
+				const a = r.audiences['age=18-29&sex=Men'];
+				near(sh.p1, 0.25 * a.share, 1e-9, `${r.id}: party = 25% of young men`);
 			}
 			const tx = { ...youth, states: ['TX'] };
 			const ctxT = S.buildContext(aud.regions, [...core, tx], 0, {});
 			assert.ok(aud.regions.every((r) => r.group === 'TX' || !S.shares(r, ctxT).p1), 'targeted party only where it runs');
 		}
 	}
+
+	// voter-group links and keys
+	assert.equal(G.filterKey({ sex: ['Men'], age: ['30-44', '18-29'] }), G.filterKey({ age: ['18-29', '30-44'], sex: ['Men'] }), 'filterKey order-independent');
+	const dims = { age: ['18-29', '30-44'], sex: ['Men', 'Women'] };
+	const sw = G.sanitizeSwing({ segments: [
+		{ id: 'c1', filter: { age: ['18-29'], sex: ['Men'] }, vote: 99, turnout: 5, custom: true },
+		{ id: 'c2', filter: { age: ['<script>'] }, vote: 5 },
+		{ id: '"><x', filter: {}, vote: 5 },
+		{ id: 'c3', filter: { planet: ['Mars'] }, vote: 5 }
+	] }, dims, { vote: 30, turnout: 50 });
+	assert.equal(sw.segments.length, 2, 'bad id / unknown dimension rejected');
+	assert.equal(sw.segments[0].vote, 30, 'vote clamped');
+	assert.deepEqual(sw.segments[1].filter, {}, 'unknown group dropped from filter');
 
 	// 5. untrusted party configs
 	assert.equal(P.sanitizeParties([{ id: 'D' }]), null, 'needs D and R');

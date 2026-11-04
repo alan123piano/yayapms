@@ -1,5 +1,5 @@
 import { RATING_THRESHOLDS as T } from './config';
-import { audienceKey } from './demographics';
+import { filterKey } from './demographics';
 import type { Level, Outcome, Override, Party, Region } from './types';
 
 /** Two-party Dem margin in points after a uniform swing (swing in points, + = toward D). */
@@ -53,7 +53,7 @@ export function buildContext(
 		if (p.core || !(p.share > 0)) continue;
 		const groups = p.states.length ? new Set(p.states) : null;
 		if (p.audience) {
-			targeted.push({ id: p.id, key: audienceKey(p.audience), share: p.share / 100, fromD: p.fromD / 100, groups });
+			targeted.push({ id: p.id, key: filterKey(p.audience), share: p.share / 100, fromD: p.fromD / 100, groups });
 			continue;
 		}
 		let v = 0, dv = 0;
