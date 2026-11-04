@@ -1,7 +1,5 @@
+import { RATING_THRESHOLDS as T } from './config';
 import type { Level, Outcome, Override, Party, Region } from './types';
-
-/** Margin thresholds (points, winner minus runner-up) for Tilt / Lean / Likely / Safe. */
-export const THRESHOLDS = [3, 8, 15] as const;
 
 /** Two-party Dem margin in points after a uniform swing (swing in points, + = toward D). */
 export function margin(demShare: number, swing: number): number {
@@ -10,7 +8,7 @@ export function margin(demShare: number, swing: number): number {
 
 export function levelFromMargin(m: number): Level {
 	const a = Math.abs(m);
-	return a < THRESHOLDS[0] ? 1 : a < THRESHOLDS[1] ? 2 : a < THRESHOLDS[2] ? 3 : 4;
+	return a < T[0] ? 1 : a < T[1] ? 2 : a < T[2] ? 3 : 4;
 }
 
 /**
@@ -139,4 +137,19 @@ export function tippingSwing(regions: Region[]): number | null {
 		if (d >= need) return sw;
 	}
 	return null;
+}
+
+/** Parties with their seat counts, most seats first. */
+export function rankParties(t: Tally, parties: Party[]): { p: Party; n: number }[] {
+	return parties.map((p) => ({ p, n: t.seats[p.id] ?? 0 })).sort((a, b) => b.n - a.n);
+}
+
+/** "Democratic majority of 13" / "Hung: Republican largest, 4 short of a majority" */
+export function majorityStatus(t: Tally, parties: Party[]): string {
+	const [top, second] = rankParties(t, parties);
+	if (!top || !top.n) return '';
+	const need = Math.floor(t.total / 2) + 1;
+	if (top.n >= need) return `${top.p.name} majority of ${top.n * 2 - t.total}`;
+	if (second && top.n === second.n) return `Hung: ${top.p.name} and ${second.p.name} tied`;
+	return `Hung: ${top.p.name} largest, ${need - top.n} short of a majority`;
 }

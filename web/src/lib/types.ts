@@ -96,3 +96,11 @@ export interface Outcome {
 	/** winner minus runner-up, in points */
 	margin: number | null;
 }
+
+/** per-state entry of a fair map's report.json (written by pipeline/generate.py) */
+export interface StateReport {
+	seats: number;
+	statewide_dem_share_2020?: number;
+	chosen?: { dem_seats_2020: number; max_pop_deviation?: number };
+	ensemble?: { samples?: number; dem_seats_2020: Record<string, number> };
+}

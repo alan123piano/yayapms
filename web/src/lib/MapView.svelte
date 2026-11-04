@@ -4,6 +4,7 @@
 		type GeoProjection, type GeoPermissibleObjects, type GeoStream
 	} from 'd3-geo';
 	import type { FeatureCollection, Geometry } from 'geojson';
+	import { MAP_MAX_ZOOM as MAX_K, REDRAW_DELAY_MS } from './config';
 	import type { LoadedMap, Region } from './types';
 
 	interface Props {
@@ -21,7 +22,6 @@
 	const W = 975;
 	const H = 610;
 	const PAD = 12;
-	const MAX_K = 40;
 
 	function makeProjection(kind: string | undefined): GeoProjection {
 		switch (kind) {
@@ -121,12 +121,11 @@
 	let svg: SVGSVGElement;
 	let commitTimer: ReturnType<typeof setTimeout> | undefined;
 
-	const REDRAW_DELAY = 50; // ms after the last gesture event before the crisp redraw
 	function setLive(v: View, anim = false) {
 		animate = anim;
 		live = v;
 		clearTimeout(commitTimer);
-		commitTimer = setTimeout(commit, anim ? 480 : REDRAW_DELAY);
+		commitTimer = setTimeout(commit, anim ? 480 : REDRAW_DELAY_MS);
 	}
 
 	function commit() {

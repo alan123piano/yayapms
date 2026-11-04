@@ -1,26 +1,14 @@
+import { DEFAULT_PARTIES, EXAMPLE_PARTIES, MAX_PARTIES } from './config';
 import type { Party } from './types';
 
-export const MAX_PARTIES = 8;
-
 export function coreParties(): Party[] {
-	return [
-		{ id: 'D', name: 'Democratic', color: '#2f6fdd', core: true, share: 0, fromD: 100, states: [] },
-		{ id: 'R', name: 'Republican', color: '#d8333a', core: true, share: 0, fromD: 0, states: [] }
-	];
+	return structuredClone(DEFAULT_PARTIES);
 }
 
-/** A UK-flavoured four-party-plus-regional scenario to play with. */
+/** the user's D/R plus the example extra parties */
 export function presetParties(core: Party[]): Party[] {
-	return [
-		...core,
-		{ id: 'p1', name: 'Progressive', color: '#2aa876', share: 11, fromD: 90, states: [] },
-		{ id: 'p2', name: 'Forward', color: '#f2a900', share: 16, fromD: 50, states: [] },
-		{ id: 'p3', name: 'America First', color: '#13a8c4', share: 13, fromD: 10, states: [] },
-		{ id: 'p4', name: 'Lone Star', color: '#9c5b2e', share: 22, fromD: 35, states: ['TX'] }
-	];
+	return [...core, ...structuredClone(EXAMPLE_PARTIES)];
 }
-
-export const EXTRA_COLORS = ['#2aa876', '#f2a900', '#13a8c4', '#9c5b2e', '#8e44ad', '#e67e22', '#7f8c8d'];
 
 export function nextPartyId(parties: Party[]): string {
 	let n = 1;

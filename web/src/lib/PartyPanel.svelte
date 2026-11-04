@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { EXTRA_COLORS, MAX_PARTIES, nextPartyId, presetParties } from './parties';
+	import { MAX_PARTIES, NEW_PARTY_COLORS } from './config';
+	import { nextPartyId, presetParties } from './parties';
 	import type { Party } from './types';
 
 	interface Props {
@@ -19,7 +20,7 @@
 		parties.push({
 			id: nextPartyId(parties),
 			name: 'New party',
-			color: EXTRA_COLORS.find((c) => !used.has(c)) ?? '#888888',
+			color: NEW_PARTY_COLORS.find((c) => !used.has(c)) ?? '#888888',
 			share: 10,
 			fromD: 50,
 			states: []
