@@ -127,13 +127,13 @@ export function tally(regions: Region[], ctx: SimContext): Tally {
 	return t;
 }
 
-/** Two-party only: smallest uniform swing (0.1 pt) giving D a majority, or null within ±30. */
+/** Two-party only: smallest uniform swing (0.1 pt) giving D a majority, or null within ±40. */
 export function tippingSwing(regions: Region[]): number | null {
 	const rated = regions.filter((r) => r.demShare !== null);
 	const total = rated.reduce((s, r) => s + r.seats, 0);
 	if (!total) return null;
 	const need = Math.floor(total / 2) + 1;
-	for (let s = -300; s <= 300; s++) {
+	for (let s = -400; s <= 400; s++) {
 		const sw = s / 10;
 		const d = rated.reduce((acc, r) => acc + (margin(r.demShare!, sw) > 0 ? r.seats : 0), 0);
 		if (d >= need) return sw;

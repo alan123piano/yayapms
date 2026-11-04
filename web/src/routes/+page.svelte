@@ -108,7 +108,7 @@
 		const e = p.get('election');
 		if (e && /^[a-z0-9-]{1,40}$/.test(e)) election = e;
 		const sw = Number(p.get('swing'));
-		if (Number.isFinite(sw) && Math.abs(sw) <= 30) swing = sw;
+		if (Number.isFinite(sw) && Math.abs(sw) <= SWING_MAX) swing = sw;
 		const id = p.get('map');
 		const o: Record<string, Override> = {};
 		for (const part of (p.get('o') ?? '').split(',').filter(Boolean)) {
@@ -191,6 +191,15 @@
 		const level = cur.winner === brush ? cur.level : 0;
 		setOverride(r.id, { p: brush, l: (level <= 1 ? 4 : level - 1) as Level });
 	}
+
+	// Swing slider: position u in [-1, 1] maps to swing = ±MAX·|u|^CURVE, so the middle of the
+	// bar gives fine control (20% of the way out = ±0.7) and the ends reach ±40.
+	const SWING_MAX = 40;
+	const SWING_CURVE = 2.5;
+	const SWING_TICKS = [-20, -5, -1, 0, 1, 5, 20];
+	const toSwing = (u: number) => Math.round(Math.sign(u) * SWING_MAX * Math.abs(u) ** SWING_CURVE * 10) / 10;
+	const toPos = (s: number) => Math.sign(s) * (Math.abs(s) / SWING_MAX) ** (1 / SWING_CURVE);
+	const tickLabel = (s: number) => (s === 0 ? '0' : `${s > 0 ? 'D' : 'R'}+${Math.abs(s)}`);
 
 	// Color strength (%) for a result under each shading mode.
 	const LEVEL_PCT = [0, 28, 48, 72, 100];
@@ -334,9 +343,20 @@
 			{#if hasBaseline}
 				<label class="swing">
 					<span>D/R swing vs. {electionInfo?.label ?? 'baseline'}: <b>{fmtMargin(swing)}</b></span>
-					<input type="range" min="-15" max="15" step="0.5" bind:value={swing} />
+					<input
+						type="range"
+						min="-1"
+						max="1"
+						step="0.001"
+						value={toPos(swing)}
+						oninput={(e) => (swing = toSwing(Number(e.currentTarget.value)))}
+					/>
 				</label>
-				<button type="button" class="link" onclick={() => (swing = 0)}>reset swing</button>
+				<div class="ticks">
+					{#each SWING_TICKS as s (s)}
+						<button type="button" style:left="{(toPos(s) + 1) * 50}%" class:on={swing === s} onclick={() => (swing = s)}>{tickLabel(s)}</button>
+					{/each}
+				</div>
 			{/if}
 			{#if Object.keys(ov).length}
 				<button type="button" class="link" onclick={() => (overrides[currentId] = {})}>clear {Object.keys(ov).length} manual ratings</button>
@@ -494,6 +514,36 @@
 	}
 	.swing input {
 		width: 100%;
+	}
+	/* inset by about half the slider thumb so ticks line up with thumb positions */
+	.ticks {
+		position: relative;
+		height: 30px;
+		margin: 0 8px 4px;
+	}
+	.ticks button {
+		position: absolute;
+		top: 0;
+		transform: translateX(-50%);
+		border: none;
+		background: none;
+		padding: 8px 0 0;
+		font-size: 0.8rem;
+		color: var(--muted);
+		font-variant-numeric: tabular-nums;
+	}
+	.ticks button::before {
+		content: '';
+		position: absolute;
+		top: 0;
+		left: 50%;
+		width: 1px;
+		height: 6px;
+		background: var(--muted);
+	}
+	.ticks button.on {
+		color: var(--fg);
+		font-weight: 600;
 	}
 	table {
 		width: 100%;
