@@ -484,21 +484,16 @@
 		max-width: 1500px;
 		margin: 0 auto;
 	}
-	/* Side-by-side layout fits one screen: map scaled to the window height minus the measured
-	   rows around it (--map-chrome), sidebar scrolls itself. */
+	/* Side-by-side layout: the map is scaled to fit the window height minus the measured rows
+	   around it (--map-chrome) and stays in view (sticky) while the page scrolls the sidebar. */
 	@media (min-width: 861px) {
 		main {
-			height: calc(100dvh - var(--header-h));
-			grid-template-rows: minmax(0, 1fr);
+			align-items: start;
 		}
 		.map {
 			--map-max-w: calc((100dvh - var(--header-h) - var(--map-chrome)) * 975 / 610);
-			min-height: 0;
-		}
-		aside {
-			overflow-y: auto;
-			min-height: 0;
-			padding-right: 4px;
+			position: sticky;
+			top: 12px;
 		}
 	}
 	@media (max-width: 860px) {
