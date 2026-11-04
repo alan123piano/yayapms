@@ -1,7 +1,7 @@
 <script lang="ts">
 	import {
 		geoAlbersUsa, geoEqualEarth, geoIdentity, geoMercator, geoPath,
-		type GeoProjection, type GeoPermissibleObjects
+		type GeoProjection, type GeoPermissibleObjects, type GeoStream
 	} from 'd3-geo';
 	import type { FeatureCollection, Geometry } from 'geojson';
 	import type { LoadedMap, Region } from './types';
@@ -33,13 +33,80 @@
 	}
 
 	// Projection is fitted once to the whole map; zooming is a transform on top of it.
-	let path = $derived.by(() => {
-		const proj = makeProjection(map.manifest.projection);
-		proj.fitExtent([[PAD, PAD], [W - PAD, H - PAD]], map.collection as GeoPermissibleObjects);
-		return geoPath(proj);
+	// Memoized on the geometry itself, so switching elections (same geometry) is free.
+	let fitted: { key: unknown; proj: GeoProjection } | null = null;
+	function projectionFor(m: LoadedMap): GeoProjection {
+		if (fitted?.key !== m.collection) {
+			const proj = makeProjection(m.manifest.projection);
+			proj.fitExtent([[PAD, PAD], [W - PAD, H - PAD]], m.collection as GeoPermissibleObjects);
+			fitted = { key: m.collection, proj };
+			pathCache = new WeakMap();
+			boundsCache = new WeakMap();
+		}
+		return fitted.proj;
+	}
+
+	/** Level of detail: drop projected points closer than ~half a screen pixel at this zoom. */
+	const LODS = [1, 2, 4, 8, 16, 32];
+	function radialFilter(out: GeoStream, tol2: number): GeoStream {
+		let lx = 0, ly = 0, px = 0, py = 0, n = 0, pending = false;
+		return {
+			point(x, y) {
+				if (n === 0 || (x - lx) ** 2 + (y - ly) ** 2 >= tol2) {
+					out.point(x, y);
+					lx = x; ly = y; n++; pending = false;
+				} else {
+					px = x; py = y; pending = true;
+				}
+			},
+			lineStart() { n = 0; pending = false; out.lineStart(); },
+			lineEnd() { if (pending) out.point(px, py); out.lineEnd(); },
+			polygonStart() { out.polygonStart(); },
+			polygonEnd() { out.polygonEnd(); },
+			sphere() { out.sphere?.(); }
+		};
+	}
+	let pathCache = new WeakMap<object, Map<number, string>>();
+	function pathD(obj: object, proj: GeoProjection, lod: number): string {
+		let byLod = pathCache.get(obj);
+		if (!byLod) pathCache.set(obj, (byLod = new Map()));
+		let d = byLod.get(lod);
+		if (d === undefined) {
+			const tol = 0.5 / lod;
+			const p = geoPath({ stream: (s: GeoStream) => proj.stream(radialFilter(s, tol * tol)) });
+			d = p(obj as GeoPermissibleObjects) ?? '';
+			byLod.set(lod, d);
+		}
+		return d;
+	}
+
+	let proj = $derived(projectionFor(map));
+	let path = $derived(geoPath(proj)); // exact, for bounds
+	let lod = $derived(LODS.findLast((l) => l <= view.k) ?? 1);
+
+	// Viewport culling: only draw shapes near the visible area (half a screen of margin for panning).
+	type Box = [[number, number], [number, number]];
+	let boundsCache = new WeakMap<object, Box>();
+	function boundsOf(obj: object): Box {
+		let b = boundsCache.get(obj);
+		if (!b) boundsCache.set(obj, (b = path.bounds(obj as GeoPermissibleObjects) as Box));
+		return b;
+	}
+	let viewBox = $derived.by(() => {
+		const w = W / view.k, h = H / view.k;
+		const x0 = -view.x / view.k, y0 = -view.y / view.k;
+		return { x0: x0 - w / 2, y0: y0 - h / 2, x1: x0 + w * 1.5, y1: y0 + h * 1.5 };
 	});
-	let shapes = $derived(map.regions.map((r) => ({ r, d: path(r.feature as GeoPermissibleObjects) ?? '' })));
-	let borderPath = $derived(map.borders ? path(map.borders as GeoPermissibleObjects) ?? '' : '');
+	function inView(obj: object): boolean {
+		const [[a, b], [c, d]] = boundsOf(obj);
+		return c >= viewBox.x0 && a <= viewBox.x1 && d >= viewBox.y0 && b <= viewBox.y1;
+	}
+	let shapes = $derived(
+		map.regions.filter((r) => inView(r.feature)).map((r) => ({ r, d: pathD(r.feature, proj, lod) }))
+	);
+	let borderPaths = $derived(
+		(map.borders?.features ?? []).filter((f) => inView(f)).map((f) => pathD(f, proj, lod))
+	);
 
 	// ---------- view transform ----------
 	// Redrawing ~435 detailed SVG paths per frame is slow, so gestures move `live` and the browser
@@ -54,11 +121,12 @@
 	let svg: SVGSVGElement;
 	let commitTimer: ReturnType<typeof setTimeout> | undefined;
 
-	function setLive(v: View, anim = false) {
+	/** delay before the crisp redraw: wheel notches arrive ~100-300 ms apart, so wait them out */
+	function setLive(v: View, anim = false, delay = 150) {
 		animate = anim;
 		live = v;
 		clearTimeout(commitTimer);
-		commitTimer = setTimeout(commit, anim ? 480 : 150);
+		commitTimer = setTimeout(commit, anim ? 480 : delay);
 	}
 
 	function commit() {
@@ -105,10 +173,10 @@
 		return { x: ((cx - r.left) / r.width) * W, y: ((cy - r.top) / r.width) * W };
 	}
 
-	function zoomAt(px: number, py: number, factor: number, anim = false) {
+	function zoomAt(px: number, py: number, factor: number, anim = false, delay = 150) {
 		const k = Math.min(MAX_K, Math.max(1, live.k * factor));
 		const f = k / live.k;
-		setLive(clampView(k, px - (px - live.x) * f, py - (py - live.y) * f), anim);
+		setLive(clampView(k, px - (px - live.x) * f, py - (py - live.y) * f), anim, delay);
 	}
 
 	// Wheel needs a non-passive listener to stop the page from scrolling.
@@ -116,7 +184,7 @@
 		const onwheel = (e: WheelEvent) => {
 			e.preventDefault();
 			const p = toSvg(e.clientX, e.clientY);
-			zoomAt(p.x, p.y, Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0025)));
+			zoomAt(p.x, p.y, Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0025)), false, 350);
 		};
 		svg.addEventListener('wheel', onwheel, { passive: false });
 		return () => svg.removeEventListener('wheel', onwheel);
@@ -211,7 +279,7 @@
 					/>
 				{/if}
 			{/each}
-			{#if borderPath}<path d={borderPath} class="borders" />{/if}
+			{#each borderPaths as d, i (i)}<path {d} class="borders" />{/each}
 		</g>
 	</svg>
 	</div>
