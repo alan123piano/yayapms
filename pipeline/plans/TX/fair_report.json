@@ -1,0 +1,29 @@
+{
+ "state": "TX",
+ "seats": 38,
+ "method": "recom",
+ "params": {
+  "steps": 2000,
+  "burn_in": 500,
+  "epsilon": 0.01,
+  "seed": 2020,
+  "units": "2020 tracts",
+  "select": "typical"
+ },
+ "statewide_dem_share_2020": 0.4717,
+ "chosen": {
+  "cut_edges": 1939,
+  "max_pop_deviation": 0.0099,
+  "dem_seats_2020": 18
+ },
+ "ensemble": {
+  "samples": 1500,
+  "dem_seats_2020": {
+   "16": 231,
+   "17": 359,
+   "18": 498,
+   "19": 296,
+   "20": 116
+  }
+ }
+}

@@ -1,0 +1,10 @@
+[
+  {
+    "id": "us-house-current",
+    "name": "Current districts (119th Congress)"
+  },
+  {
+    "id": "us-house-fair",
+    "name": "Fair districts (ReCom)"
+  }
+]

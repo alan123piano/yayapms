@@ -1,0 +1,13 @@
+{
+ "state": "VT",
+ "seats": 1,
+ "method": "at-large",
+ "chosen": {
+  "dem_seats_2020": 1
+ },
+ "ensemble": {
+  "dem_seats_2020": {
+   "1": 1
+  }
+ }
+}

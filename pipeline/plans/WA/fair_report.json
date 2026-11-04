@@ -1,0 +1,27 @@
+{
+ "state": "WA",
+ "seats": 10,
+ "method": "recom",
+ "params": {
+  "steps": 2000,
+  "burn_in": 500,
+  "epsilon": 0.01,
+  "seed": 2020,
+  "units": "2020 tracts",
+  "select": "typical"
+ },
+ "statewide_dem_share_2020": 0.5993,
+ "chosen": {
+  "cut_edges": 266,
+  "max_pop_deviation": 0.0086,
+  "dem_seats_2020": 7
+ },
+ "ensemble": {
+  "samples": 1500,
+  "dem_seats_2020": {
+   "6": 94,
+   "7": 1339,
+   "8": 67
+  }
+ }
+}

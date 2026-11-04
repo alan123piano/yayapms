@@ -1,0 +1,25 @@
+{
+ "state": "NH",
+ "seats": 2,
+ "method": "recom",
+ "params": {
+  "steps": 2000,
+  "burn_in": 500,
+  "epsilon": 0.01,
+  "seed": 2020,
+  "units": "2020 tracts",
+  "select": "typical"
+ },
+ "statewide_dem_share_2020": 0.5375,
+ "chosen": {
+  "cut_edges": 29,
+  "max_pop_deviation": 0.0011,
+  "dem_seats_2020": 2
+ },
+ "ensemble": {
+  "samples": 1500,
+  "dem_seats_2020": {
+   "2": 1500
+  }
+ }
+}

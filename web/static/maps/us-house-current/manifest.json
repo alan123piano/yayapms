@@ -1,0 +1,35 @@
+{
+  "file": "districts.geojson",
+  "id": "us-house-current",
+  "name": "Current districts (119th Congress)",
+  "description": "119th Congress (2025\u20132027) district boundaries, Census cartographic file.",
+  "projection": "albersUsa",
+  "idProperty": "id",
+  "labelProperty": "name",
+  "groupProperty": "state",
+  "seatsProperty": "seats",
+  "bordersFile": "states.geojson",
+  "elections": [
+    {
+      "id": "pres-2020",
+      "file": "elections/pres-2020.json",
+      "label": "2020 President",
+      "candidates": {
+        "D": "Biden",
+        "R": "Trump"
+      },
+      "source": "VEST 2020 precinct results (Harvard Dataverse), allocated to 2020 census blocks by population"
+    },
+    {
+      "id": "pres-2024",
+      "file": "elections/pres-2024.json",
+      "label": "2024 President",
+      "candidates": {
+        "D": "Harris",
+        "R": "Trump"
+      },
+      "source": "The New York Times 2024 presidential precinct map, allocated to 2020 census blocks by population. Alaska unavailable; parts of OK and SD missing.",
+      "credit": "2024 precinct data: The New York Times"
+    }
+  ]
+}

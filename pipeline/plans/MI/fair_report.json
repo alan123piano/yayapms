@@ -1,0 +1,29 @@
+{
+ "state": "MI",
+ "seats": 13,
+ "method": "recom",
+ "params": {
+  "steps": 2000,
+  "burn_in": 500,
+  "epsilon": 0.01,
+  "seed": 2020,
+  "units": "2020 tracts",
+  "select": "typical"
+ },
+ "statewide_dem_share_2020": 0.5141,
+ "chosen": {
+  "cut_edges": 573,
+  "max_pop_deviation": 0.0092,
+  "dem_seats_2020": 6
+ },
+ "ensemble": {
+  "samples": 1500,
+  "dem_seats_2020": {
+   "4": 91,
+   "5": 476,
+   "6": 712,
+   "7": 217,
+   "8": 4
+  }
+ }
+}

@@ -1,0 +1,27 @@
+{
+ "state": "MN",
+ "seats": 8,
+ "method": "recom",
+ "params": {
+  "steps": 2000,
+  "burn_in": 500,
+  "epsilon": 0.01,
+  "seed": 2020,
+  "units": "2020 tracts",
+  "select": "typical"
+ },
+ "statewide_dem_share_2020": 0.5364,
+ "chosen": {
+  "cut_edges": 346,
+  "max_pop_deviation": 0.0098,
+  "dem_seats_2020": 4
+ },
+ "ensemble": {
+  "samples": 1500,
+  "dem_seats_2020": {
+   "3": 55,
+   "4": 1086,
+   "5": 359
+  }
+ }
+}

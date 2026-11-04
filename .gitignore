@@ -1,0 +1,8 @@
+node_modules/
+.venv/
+web/.svelte-kit/
+web/build/
+pipeline/data/raw/
+pipeline/data/work/
+__pycache__/
+*.pyc

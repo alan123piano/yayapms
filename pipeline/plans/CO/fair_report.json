@@ -1,0 +1,28 @@
+{
+ "state": "CO",
+ "seats": 8,
+ "method": "recom",
+ "params": {
+  "steps": 2000,
+  "burn_in": 500,
+  "epsilon": 0.01,
+  "seed": 2020,
+  "units": "2020 tracts",
+  "select": "typical"
+ },
+ "statewide_dem_share_2020": 0.5694,
+ "chosen": {
+  "cut_edges": 329,
+  "max_pop_deviation": 0.0089,
+  "dem_seats_2020": 5
+ },
+ "ensemble": {
+  "samples": 1500,
+  "dem_seats_2020": {
+   "4": 20,
+   "5": 956,
+   "6": 519,
+   "7": 5
+  }
+ }
+}
