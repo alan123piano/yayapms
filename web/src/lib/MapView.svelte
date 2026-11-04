@@ -121,12 +121,12 @@
 	let svg: SVGSVGElement;
 	let commitTimer: ReturnType<typeof setTimeout> | undefined;
 
-	/** delay before the crisp redraw: wheel notches arrive ~100-300 ms apart, so wait them out */
-	function setLive(v: View, anim = false, delay = 150) {
+	const REDRAW_DELAY = 50; // ms after the last gesture event before the crisp redraw
+	function setLive(v: View, anim = false) {
 		animate = anim;
 		live = v;
 		clearTimeout(commitTimer);
-		commitTimer = setTimeout(commit, anim ? 480 : delay);
+		commitTimer = setTimeout(commit, anim ? 480 : REDRAW_DELAY);
 	}
 
 	function commit() {
@@ -173,10 +173,10 @@
 		return { x: ((cx - r.left) / r.width) * W, y: ((cy - r.top) / r.width) * W };
 	}
 
-	function zoomAt(px: number, py: number, factor: number, anim = false, delay = 150) {
+	function zoomAt(px: number, py: number, factor: number, anim = false) {
 		const k = Math.min(MAX_K, Math.max(1, live.k * factor));
 		const f = k / live.k;
-		setLive(clampView(k, px - (px - live.x) * f, py - (py - live.y) * f), anim, delay);
+		setLive(clampView(k, px - (px - live.x) * f, py - (py - live.y) * f), anim);
 	}
 
 	// Wheel needs a non-passive listener to stop the page from scrolling.
@@ -184,7 +184,7 @@
 		const onwheel = (e: WheelEvent) => {
 			e.preventDefault();
 			const p = toSvg(e.clientX, e.clientY);
-			zoomAt(p.x, p.y, Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0025)), false, 350);
+			zoomAt(p.x, p.y, Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0025)));
 		};
 		svg.addEventListener('wheel', onwheel, { passive: false });
 		return () => svg.removeEventListener('wheel', onwheel);
