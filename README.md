@@ -13,7 +13,7 @@ tools/      Supply-chain helpers (package age checks)
 
 ```sh
 make setup            # install pinned deps (first time only)
-make dev              # run the app -> http://localhost:5173
+make                  # run the app -> http://localhost:5173
 make data             # finish any missing states + rebuild map files
 make data S="TX NC"   # recompute specific states
 make audit            # supply-chain checks
