@@ -125,7 +125,7 @@
 		flex-direction: column;
 		gap: 2px;
 		margin-top: 8px;
-		font-size: 0.8rem;
+		font-size: 0.85rem;
 		color: var(--muted);
 	}
 	label b {

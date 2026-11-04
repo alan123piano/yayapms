@@ -451,7 +451,7 @@
 		}
 	}
 	h3 {
-		font-size: 0.8rem;
+		font-size: 0.85rem;
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		color: var(--muted);

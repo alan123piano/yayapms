@@ -134,7 +134,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
-		font-size: 0.8rem;
+		font-size: 0.85rem;
 		color: var(--muted);
 	}
 	.actions {
