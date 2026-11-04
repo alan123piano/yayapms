@@ -18,7 +18,8 @@
         "D": "Biden",
         "R": "Trump"
       },
-      "source": "VEST 2020 precinct results (Harvard Dataverse), allocated to 2020 census blocks by population"
+      "source": "VEST 2020 precinct results (Harvard Dataverse), allocated to 2020 census blocks by population",
+      "cellsFile": "elections/pres-2020.cells.json"
     },
     {
       "id": "pres-2024",
@@ -29,7 +30,8 @@
         "R": "Trump"
       },
       "source": "The New York Times 2024 presidential precinct map, allocated to 2020 census blocks by population. Alaska (at-large): statewide MEDSL totals. Parts of OK and SD missing.",
-      "credit": "2024 precinct data: The New York Times"
+      "credit": "2024 precinct data: The New York Times",
+      "cellsFile": "elections/pres-2024.cells.json"
     }
   ]
 }

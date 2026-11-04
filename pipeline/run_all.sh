@@ -19,6 +19,9 @@ def todo(s):
         return not (w / "tracts.gpkg").exists() or any(
             not (w / "votes" / f"{e}.csv").exists() and not (w / "votes" / f"{e}.unavailable").exists()
             for e in sources.ELECTIONS)
+    if step == "demo":
+        return any((w / "votes" / f"{e}.csv").exists() and not (w / "demo" / f"{e}.npz").exists()
+                   for e in sources.ELECTIONS)
     return not (sources.PLANS / s / "fair_report.json").exists()
 print(" ".join(s for s in states if todo(s)))
 PYEOF
@@ -29,5 +32,8 @@ B=$(pending build); echo "== build units + elections: ${B:-nothing to do}"
 [ -n "$B" ] && printf '%s\n' $B | xargs -P 3 -I{} sh -c '$PY build_units.py $F {} > data/work/logs/{}.build.log 2>&1 || echo "BUILD FAILED {}"'
 G=$(pending generate); echo "== generate fair plans: ${G:-nothing to do}"
 [ -n "$G" ] && printf '%s\n' $G | xargs -P 6 -I{} sh -c '$PY generate.py $F {} > data/work/logs/{}.gen.log 2>&1 || echo "GEN FAILED {}"'
+echo "== survey model"; $PY ces_model.py $F 2>&1 | grep -vi warning
+D=$(pending demo); echo "== demographics: ${D:-nothing to do}"
+[ -n "$D" ] && printf '%s\n' $D | xargs -P 3 -I{} sh -c '$PY demographics.py $F {} > data/work/logs/{}.demo.log 2>&1 || echo "DEMO FAILED {}"'
 echo "== export"
 $PY export.py 2>&1 | grep -vi warning

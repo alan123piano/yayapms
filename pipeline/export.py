@@ -14,8 +14,12 @@ from __future__ import annotations
 import json
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
+from scipy.special import expit, logit
 from shapely.geometry import mapping
+
+import cells
 
 import sources
 from sources import ELECTIONS, PLANS, ROOT, WORK
@@ -41,8 +45,38 @@ def round_coords(geom, nd=PRECISION):
     return g
 
 
+# ---------- demographic cells ----------
+def tract_cells(usps: str, eid: str):
+    """(geoids, [T, 240] = cvap | voters | dem per cell) for a state, or None if not built."""
+    f = WORK / usps / "demo" / f"{eid}.npz"
+    if not f.exists():
+        return None
+    z = np.load(f)
+    return list(z["geoid"]), np.concatenate([z["cvap"], z["voters"], z["dem"]], axis=1).astype(float)
+
+
+def match_totals(c: np.ndarray, D: np.ndarray, R: np.ndarray) -> np.ndarray:
+    """Re-calibrate district cell rows [N, 240] so voters and Dem votes sum to the real D, R."""
+    from demographics import solve_offset
+    n = cells.N_CELLS
+    cv, vo, de = c[:, :n], c[:, n:2 * n], c[:, 2 * n:]
+    t = np.clip(vo / np.maximum(cv, 1e-9), 1e-4, 1 - 1e-4)
+    q = np.clip(de / np.maximum(vo, 1e-9), 1e-4, 1 - 1e-4)
+    vo = cv * expit(logit(t) + solve_offset(logit(t), cv, D + R)[:, None])
+    de = vo * expit(logit(q) + solve_offset(logit(q), vo, D)[:, None])
+    return np.concatenate([cv, vo, de], axis=1)
+
+
+def cells_json(rows: dict[str, np.ndarray]) -> dict:
+    bad = [k for k, v in rows.items() if not np.isfinite(v).all() or (v < -0.5).any()]
+    assert not bad, f"invalid demographic cells (NaN/negative) for {bad[:10]}"
+    return {"dims": cells.DIMS, "order": ["age", "race", "edu", "sex"],
+            "fields": ["cvap", "voters", "dem"],
+            "results": {k: np.rint(v).astype(int).tolist() for k, v in rows.items()}}
+
+
 def write_pack(pack_id: str, gdf: gpd.GeoDataFrame, manifest: dict, results: dict[str, dict],
-               extra: dict | None = None) -> None:
+               extra: dict | None = None, cell_rows: dict[str, dict] | None = None) -> None:
     out = MAPS / pack_id
     out.mkdir(parents=True, exist_ok=True)
     gdf = gdf.to_crs("EPSG:4326")
@@ -60,7 +94,12 @@ def write_pack(pack_id: str, gdf: gpd.GeoDataFrame, manifest: dict, results: dic
             continue
         (out / "elections" / f"{eid}.json").write_text(json.dumps({"results": res}, separators=(",", ":")))
         meta = {k: v for k, v in ELECTIONS[eid].items() if not callable(v)}
-        elections.append({"id": eid, "file": f"elections/{eid}.json", **meta})
+        entry = {"id": eid, "file": f"elections/{eid}.json", **meta}
+        if cell_rows and cell_rows.get(eid):
+            name = f"elections/{eid}.cells.json"
+            (out / name).write_text(json.dumps(cells_json(cell_rows[eid]), separators=(",", ":")))
+            entry["cellsFile"] = name
+        elections.append(entry)
     manifest = {"file": "districts.geojson", **manifest, "elections": elections}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     for name, obj in (extra or {}).items():
@@ -100,7 +139,28 @@ def current_pack() -> list[str]:
     cds = cds[cds.STATEFP.isin(sources.STATES)]  # 50 states; drops DC & territories (non-voting)
     rows, built = [], []
     results: dict[str, dict] = {e: {} for e in ELECTIONS}
+    cell_rows: dict[str, dict] = {e: {} for e in ELECTIONS}
     for fips, (usps, sname) in sources.STATES.items():
+        split_csv = WORK / usps / "tract_cd.csv"
+        for e in ELECTIONS:
+            tc = tract_cells(usps, e)
+            vf = WORK / usps / "current" / f"{e}.csv"
+            if tc is None or not split_csv.exists() or not vf.exists():
+                continue
+            geoids, arr = tc
+            sp = pd.read_csv(split_csv, dtype={"GEOID": str, "cd": str})
+            sp["w"] = sp["pop"] / sp.groupby("GEOID")["pop"].transform("sum").replace(0, np.nan)
+            sp["w"] = sp["w"].fillna(1 / sp.groupby("GEOID")["pop"].transform("size"))
+            pos = {g: i for i, g in enumerate(geoids)}
+            sp = sp[sp.GEOID.isin(pos)]
+            cds_ = sorted(sp.cd.unique())
+            agg = np.zeros((len(cds_), arr.shape[1]))
+            np.add.at(agg, sp.cd.map({c: i for i, c in enumerate(cds_)}).to_numpy(),
+                      arr[sp.GEOID.map(pos).to_numpy()] * sp.w.to_numpy()[:, None])
+            v = pd.read_csv(vf, dtype={"cd": str}).set_index("cd").reindex(cds_).fillna(0)
+            agg = match_totals(agg, v.D.to_numpy(float), v.R.to_numpy(float))
+            for c, row in zip(cds_, agg):
+                cell_rows[e][f"{usps}-{'AL' if int(c) == 0 else f'{int(c):02d}'}"] = row
         pop_csv = WORK / usps / "current_districts.csv"
         pop = pd.read_csv(pop_csv, dtype={"cd": str}).set_index("cd")["pop"] if pop_csv.exists() else None
         votes = {e: pd.read_csv(f, dtype={"cd": str}).set_index("cd")
@@ -123,7 +183,7 @@ def current_pack() -> list[str]:
         "name": "Current districts (119th Congress)",
         "description": "119th Congress (2025–2027) district boundaries, Census cartographic file.",
         **common_manifest(),
-    }, results)
+    }, results, cell_rows=cell_rows)
     return built
 
 
@@ -131,6 +191,7 @@ def fair_pack() -> list[str]:
     tr = gpd.read_file(sources.tracts())[["GEOID", "geometry"]]
     rows, reports, done = [], {}, []
     results: dict[str, dict] = {e: {} for e in ELECTIONS}
+    cell_rows: dict[str, dict] = {e: {} for e in ELECTIONS}
     for fips, (usps, sname) in sources.STATES.items():
         asg = PLANS / usps / "fair_assignment.csv"
         if not asg.exists():
@@ -142,6 +203,15 @@ def fair_pack() -> list[str]:
         d = g.dissolve(by="district", aggfunc={"pop": "sum"}, method="coverage")  # tracts tile without overlap
         votes = {e: pd.read_csv(f, dtype={"GEOID": str}).merge(a, on="GEOID").groupby("district")[["D", "R"]].sum()
                  for e in ELECTIONS if (f := WORK / usps / "votes" / f"{e}.csv").exists()}
+        dist_of = dict(zip(a.GEOID, a.district))
+        tcells = {}
+        for e in ELECTIONS:
+            tc = tract_cells(usps, e)
+            if tc is None:
+                continue
+            geoids, arr = tc
+            keys = np.array([dist_of.get(g, -1) for g in geoids])
+            tcells[e] = {k: arr[keys == k].sum(axis=0) for k in set(keys) if k != -1}
         # Number districts north-to-south, then west-to-east, for stable readable labels
         c = d.to_crs("EPSG:5070").geometry.centroid
         order = sorted(d.index, key=lambda i: (-round(c[i].y / 50_000), c[i].x))
@@ -156,6 +226,9 @@ def fair_pack() -> list[str]:
             for e, v in votes.items():
                 if idx in v.index:
                     results[e][did] = {"D": round(v.loc[idx, "D"]), "R": round(v.loc[idx, "R"])}
+            for e, byd in tcells.items():
+                if idx in byd:
+                    cell_rows[e][did] = byd[idx]
         reports[usps] = json.loads((PLANS / usps / "fair_report.json").read_text())
     if not rows:
         print("us-house-fair: no states generated yet")
@@ -168,7 +241,7 @@ def fair_pack() -> list[str]:
                        "States not yet generated are absent.",
         "reportFile": "report.json",
         **common_manifest(),
-    }, results, extra={"report.json": reports})
+    }, results, extra={"report.json": reports}, cell_rows=cell_rows)
     return done
 
 
