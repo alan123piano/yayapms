@@ -139,12 +139,6 @@ try {
 			for (let c = 0; c < n; c++) { V += rb0.V[c]; if (basis.labels[c].age === '18-29') Y += Math.min(rb0.V[c] * 1.2, rb0.C[c] * 0.995); }
 			near(ct.sim.votes.get(r0.id), V - [...Array(n).keys()].filter((c) => basis.labels[c].age === '18-29').reduce((a, c) => a + rb0.V[c], 0) + Y, 1e-6, 'youth turnout +20%');
 
-			// main effects only: reproduces every single group's real share (that's what it is fitted to)
-			for (const [d, gs] of Object.entries(cells.dims)) for (const g of gs) {
-				const x = ctx0.sim.group({ [d]: [g] });
-				for (const q of ['D', 'R']) near(x.additive[q], x.before.shares[q], 1e-6, `main effects reproduce ${q} among ${g}`);
-			}
-
 			// demographics-only baseline: each cell at its national rate; national group shares unchanged
 			const demo = M.demographicsOnly(basis);
 			const cdemo = ctxOf(demo, rs, core);
@@ -196,8 +190,6 @@ try {
 			const g = sim3.group(f);
 			for (const q of ['D', 'L', 'R']) near(g.shares[q], g.before.shares[q], 1e-6, `3-party national ${q} among ${JSON.stringify(f)}`);
 		}
-		const y = sim3.group({ age: ['18-29'] });
-		for (const q of ['D', 'L', 'R']) near(y.additive[q], y.before.shares[q], 1e-6, `3-party main effects ${q}`);
 		// appeals and extras work against any baseline party
 		const rApp = core.map((p) => (p.id === 'R' ? { ...p, appeals: [{ filter: { sex: ['Men'] }, share: 50 }] } : p));
 		const s3 = M.simulate(b3, regions, { swing: 2, segments: [], parties: [...rApp, party({ share: 5, fromD: 40 })] });

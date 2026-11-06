@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { DEMO_DIM_LABELS } from './config';
 	import MatrixDialog from './MatrixDialog.svelte';
-	import { filterKey, type Filter, type GroupOption } from './demographics';
+	import { describe, filterKey, type Filter, type GroupOption } from './demographics';
 	import { isLive, type Simulation } from './model';
 	import { spectrumOrder } from './parties';
 	import type { CellData, Party } from './types';
@@ -35,6 +35,14 @@
 		...(custom.length ? [{ title: 'Custom', rows: custom.map((c) => ({ key: c.key, label: c.label, filter: c.filter })) }] : [])
 	]);
 	let results = $derived(new Map(sections.flatMap((s) => s.rows).map((r) => [r.key, sim.group(r.filter)])));
+	const nameOf = (id: string) => parties.find((p) => p.id === id)?.name ?? id;
+	/** e.g. "Democratic: Hispanic 75% → 68%" */
+	let misses = $derived(
+		sim.misses.map((m) => {
+			const what = m.kind === 'group' ? describe(m.filter ?? {}, cells.order) : m.kind === 'elsewhere' ? 'everyone else' : `draws from ${nameOf('D')}`;
+			return `${nameOf(m.party)}: ${what} ${Math.round(m.target * 100)}% → ${Math.round(m.got * 100)}%`;
+		})
+	);
 	const pct = (x: number | undefined) => (x === undefined ? '' : `${Math.round(x * 100)}`);
 </script>
 
@@ -72,7 +80,7 @@
 </p>
 <!-- space kept so the note can't shift the panel mid-drag -->
 <p class="warn small" class:hidden={sim.converged} aria-hidden={sim.converged}>
-	Some targets can't all be met at once; these are the closest the model gets.
+	Not every target can be met: {misses.length ? misses.join('; ') : ''}.
 </p>
 
 <style>
