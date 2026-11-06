@@ -194,16 +194,25 @@
 		border-color: var(--accent);
 		color: var(--on-accent);
 	}
+	/* The text column is wide enough for the longest reading ("Turnout −50% (100%)") and the
+	   value sits in a fixed slot, so dragging a slider never re-wraps or shifts the panel. */
 	label {
 		display: grid;
-		grid-template-columns: 112px 1fr;
+		grid-template-columns: 11em 1fr;
 		align-items: center;
 		gap: 8px;
 		font-size: 0.85rem;
 		color: var(--muted);
 		margin-top: 4px;
 	}
+	label > span {
+		white-space: nowrap;
+		font-variant-numeric: tabular-nums;
+	}
 	label b {
 		color: var(--fg);
+		display: inline-block;
+		min-width: 3em;
+		text-align: center;
 	}
 </style>
