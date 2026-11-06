@@ -5,6 +5,7 @@
 		type DemoSwing, type Filter, type GroupStat, type Segment
 	} from './demographics';
 	import { swingLabel } from './format';
+	import Scrubber, { stepped } from './Scrubber.svelte';
 	import type { CellData, Region } from './types';
 
 	interface Props {
@@ -16,6 +17,9 @@
 	let { regions, cells, swing = $bindable() }: Props = $props();
 
 	const CUSTOM = 'custom';
+	const VOTE = { stops: stepped(-DEMO_LIMITS.vote, DEMO_LIMITS.vote, 1), every: 5 };
+	const TURNOUT = { stops: stepped(-DEMO_LIMITS.turnout, DEMO_LIMITS.turnout, 5), every: 5 };
+	const fmtTurnout = (t: number) => (t ? `${t > 0 ? '+' : ''}${t}%` : '0');
 	let picked = $state<string | null>(null);
 	let tab = $derived(picked === CUSTOM || (picked && cells.order.includes(picked)) ? picked : cells.order[0]);
 
@@ -68,13 +72,14 @@
 	</div>
 	<label>
 		<span>Vote <b>{v ? swingLabel(v) : '—'}</b></span>
-		<input type="range" min={-DEMO_LIMITS.vote} max={DEMO_LIMITS.vote} step="1" value={v}
-			oninput={(e) => update(id, filter, { vote: Number(e.currentTarget.value) }, custom)} />
+		<Scrubber value={v} stops={VOTE.stops} ticks={VOTE.stops.filter((x) => x % VOTE.every === 0)}
+			labels={[-DEMO_LIMITS.vote / 2, 0, DEMO_LIMITS.vote / 2]} format={swingLabel} origin={0}
+			onchange={(x) => update(id, filter, { vote: x }, custom)} />
 	</label>
 	<label>
-		<span>Turnout <b>{t ? `${t > 0 ? '+' : ''}${t}%` : '—'}</b> <span class="muted">({pct(s.turnoutAfter)})</span></span>
-		<input type="range" min={-DEMO_LIMITS.turnout} max={DEMO_LIMITS.turnout} step="5" value={t}
-			oninput={(e) => update(id, filter, { turnout: Number(e.currentTarget.value) }, custom)} />
+		<span>Turnout <b>{t ? fmtTurnout(t) : '—'}</b> <span class="muted">({pct(s.turnoutAfter)})</span></span>
+		<Scrubber value={t} stops={TURNOUT.stops} labels={[-DEMO_LIMITS.turnout / 2, 0, DEMO_LIMITS.turnout / 2]}
+			format={fmtTurnout} origin={0} onchange={(x) => update(id, filter, { turnout: x }, custom)} />
 	</label>
 {/snippet}
 
@@ -198,14 +203,15 @@
 	   value sits in a fixed slot, so dragging a slider never re-wraps or shifts the panel. */
 	label {
 		display: grid;
-		grid-template-columns: 11em 1fr;
-		align-items: center;
+		grid-template-columns: 11em minmax(0, 1fr);
+		align-items: start;
 		gap: 8px;
 		font-size: 0.85rem;
 		color: var(--muted);
 		margin-top: 4px;
 	}
 	label > span {
+		line-height: 20px; /* = the scrubber's bar row, so text lines up with the bar */
 		white-space: nowrap;
 		font-variant-numeric: tabular-nums;
 	}

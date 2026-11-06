@@ -3,6 +3,7 @@
 	import { describe, filterKey, type Filter } from './demographics';
 	import { nextPartyId, presetParties } from './parties';
 	import type { Party } from './types';
+	import Scrubber, { stepped } from './Scrubber.svelte';
 
 	interface Props {
 		parties: Party[];
@@ -61,6 +62,16 @@
 			.filter((s) => s && groups.includes(s));
 	}
 
+	/** national parties top out at 50%; a party aimed at one voter group can win all of it */
+	function shareScale(p: Party) {
+		const max = p.audience ? 100 : 50;
+		const stops = stepped(0, max, 1);
+		return { stops, ticks: stops.filter((x) => x % (max / 10) === 0), labels: [0, max / 2, max] };
+	}
+	const DRAW = stepped(0, 100, 5);
+	const drawTick = (fromD: number) =>
+		fromD === 50 ? 'even' : `all ${(fromD > 50 ? dParty?.name : rParty?.name) ?? (fromD > 50 ? 'D' : 'R')}`;
+
 	function drawLabel(fromD: number) {
 		if (fromD >= 50) return `${fromD}% from ${dParty?.name ?? 'D'}`;
 		return `${100 - fromD}% from ${rParty?.name ?? 'R'}`;
@@ -88,11 +99,11 @@
 				{/if}
 				<label>
 					<span>Vote share <b>{p.share}%</b>{shareLabel(p)}</span>
-					<input type="range" min="0" max={p.audience ? 100 : 50} step="1" bind:value={p.share} />
+					<Scrubber bind:value={p.share} {...shareScale(p)} format={(x) => `${x}%`} />
 				</label>
 				<label>
 					<span>Draws <b>{drawLabel(p.fromD)}</b></span>
-					<input type="range" min="0" max="100" step="5" bind:value={p.fromD} class="draw" />
+					<Scrubber bind:value={p.fromD} stops={DRAW} labels={[0, 50, 100]} format={drawTick} origin={50} />
 				</label>
 				<label>
 					<span>Runs in</span>
@@ -160,12 +171,6 @@
 	label b {
 		color: var(--fg);
 		font-weight: 600;
-	}
-	input[type='range'] {
-		width: 100%;
-	}
-	.draw {
-		accent-color: var(--fg);
 	}
 	.states {
 		width: 100%;
