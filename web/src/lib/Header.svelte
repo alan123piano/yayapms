@@ -44,6 +44,10 @@
 
 <style>
 	header {
+		position: sticky;
+		top: 0;
+		z-index: 5; /* above the map, below the tooltip */
+		background: var(--bg);
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;

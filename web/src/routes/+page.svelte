@@ -333,7 +333,7 @@
 		.map {
 			--map-max-w: calc((100dvh - var(--header-h) - var(--map-chrome)) * 975 / 610);
 			position: sticky;
-			top: 12px;
+			top: calc(var(--header-h) + 12px);
 		}
 	}
 	@media (max-width: 860px) {
