@@ -62,8 +62,6 @@ export interface Region {
 	votes: number;
 	/** demographic cells for the selected election, if available */
 	cells?: number[];
-	/** per voter group (keyed by demographics.filterKey): its share of the region's voters and its D share */
-	audiences?: Record<string, { share: number; dem: number }>;
 	feature: Feature<Geometry>;
 }
 
@@ -76,21 +74,28 @@ export interface LoadedMap {
 	report?: unknown;
 }
 
+/** "wins `share`% of the voters matching `filter`" */
+export interface Appeal {
+	/** per dimension, the allowed groups (see demographics.ts) */
+	filter: Record<string, string[]>;
+	share: number;
+}
+
 export interface Party {
 	/** 'D' and 'R' are the core parties; extras get ids like 'p1' */
 	id: string;
 	name: string;
 	color: string;
 	core?: boolean;
-	/** extras only: target vote share in %, within its states (or nationally) */
+	/** extras only: vote share in % among voters outside its target groups (everyone, if it
+	 *  has none), within its states */
 	share: number;
 	/** extras only: % of its voters drawn from D (rest from R) */
 	fromD: number;
 	/** extras only: groups (states) it contests; empty = everywhere */
 	states: string[];
-	/** extras only: voter group it appeals to (per dimension, allowed groups); `share` is then
-	 *  % of that group's voters */
-	audience?: Record<string, string[]>;
+	/** voter groups it targets; for D/R these move their share of that group */
+	appeals: Appeal[];
 }
 
 /** 1..4 = Tilt, Lean, Likely, Safe */

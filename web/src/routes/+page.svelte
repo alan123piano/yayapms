@@ -14,16 +14,16 @@
 	import StatePanel from '#lib/StatePanel.svelte';
 	import SwingSlider from '#lib/SwingSlider.svelte';
 	import Tooltip from '#lib/Tooltip.svelte';
+	import VoteMatrix from '#lib/VoteMatrix.svelte';
 	import {
 		DEFAULT_BRUSH, DEFAULT_ELECTION, DEFAULT_SHADING, DEMO_DIM_LABELS, DEMO_LIMITS, SHADINGS, SWING_STOPS,
 		type ShadingId
 	} from '#lib/config.ts';
-	import {
-		applyDemographics, describe, emptySwing, filterKey, isActive, sanitizeSwing, withAudiences
-	} from '#lib/demographics.ts';
+	import { describe, emptySwing, filterKey, isActive, sanitizeSwing, type GroupOption } from '#lib/demographics.ts';
 	import { loadPack, withElection } from '#lib/loader.ts';
+	import { fitBasis, residualPoints, type Basis, type Scenario } from '#lib/model.ts';
 	import { coreParties, sanitizeParties } from '#lib/parties.ts';
-	import { outcomeFill } from '#lib/shading.ts';
+	import { outcomeFill, residualFill } from '#lib/shading.ts';
 	import { buildContext, outcome, tally } from '#lib/sim.ts';
 	import type { Level, LoadedMap, Override, Party, Region, StateReport } from '#lib/types.ts';
 
@@ -49,23 +49,20 @@
 	let loading = $state(false);
 
 	// ---------- derived ----------
-	/** voter groups that some party appeals to */
-	let audienceKeys = $derived(parties.flatMap((p) => (p.audience ? [p.audience] : [])));
-	/** every map with region results from the selected election, moved by the voter-group swings */
-	let maps = $derived(
+	/** every map with region results from the selected election */
+	let maps = $derived(Object.fromEntries(Object.entries(loaded).map(([id, m]) => [id, withElection(m, election)])));
+	/** the fitted vote model per map: national cell matrix + district residuals (model.ts) */
+	let bases = $derived(
 		Object.fromEntries(
-			Object.entries(loaded).map(([id, m]) => {
-				const cells = m.elections.find((e) => e.id === election)?.cells;
-				const swung = applyDemographics(withElection(m, election), cells, demoSwing);
-				return [id, withAudiences(swung, cells, demoSwing, audienceKeys)];
-			})
-		)
+			Object.entries(maps).map(([id, m]) => [id, fitBasis(m.regions, m.elections.find((e) => e.id === election)?.cells)])
+		) as Record<string, Basis>
 	);
+	let scenario = $derived<Scenario>({ swing, segments: demoSwing.segments, parties });
 	let map = $derived(maps[currentId]);
 	let electionInfo = $derived(map?.elections.find((e) => e.id === election));
 	let byId = $derived(Object.fromEntries(parties.map((p) => [p.id, p])) as Record<string, Party>);
 	let ov = $derived(overrides[currentId] ?? {});
-	let ctx = $derived(map ? buildContext(map.regions, parties, swing, ov) : null);
+	let ctx = $derived(map ? buildContext(bases[currentId], map.regions, scenario, ov) : null);
 	let t = $derived(map && ctx ? tally(map.regions, ctx) : null);
 	let groups = $derived(map ? [...new Set(map.regions.map((r) => r.group).filter(Boolean))].sort() : []);
 	let hasBaseline = $derived(!!map?.regions.some((r) => r.demShare !== null));
@@ -73,18 +70,18 @@
 		focusGroup && map && ctx ? tally(map.regions.filter((r) => r.group === focusGroup), ctx) : null
 	);
 	/** voter groups a party can appeal to: every single group, plus custom groups */
-	let audienceOptions = $derived.by(() => {
+	let audienceOptions = $derived.by((): GroupOption[] => {
 		const c = electionInfo?.cells;
 		if (!c) return [];
 		const single = c.order.flatMap((dim) =>
 			c.dims[dim].map((group) => {
 				const filter = { [dim]: [group] };
-				return { key: filterKey(filter), label: `${DEMO_DIM_LABELS[dim] ?? dim}: ${group}`, filter };
+				return { key: filterKey(filter), label: group, dim: DEMO_DIM_LABELS[dim] ?? dim, filter, custom: false };
 			})
 		);
 		const custom = demoSwing.segments
 			.filter((g) => g.custom && Object.keys(g.filter).length)
-			.map((g) => ({ key: filterKey(g.filter), label: `Custom: ${describe(g.filter, c.order)}`, filter: g.filter }));
+			.map((g) => ({ key: filterKey(g.filter), label: describe(g.filter, c.order), filter: g.filter, custom: true }));
 		return [...single, ...custom.filter((x, k) => custom.findIndex((y) => y.key === x.key) === k)];
 	});
 	let report = $derived(
@@ -142,7 +139,7 @@
 		const p = new URLSearchParams({ map: currentId, election, swing: String(swing) });
 		if (o) p.set('o', o);
 		if (focusGroup) p.set('focus', focusGroup);
-		if (parties.length > 2) p.set('parties', JSON.stringify(parties.map(({ core, ...rest }) => rest)));
+		if (parties.length > 2 || parties.some((x) => x.appeals.length)) p.set('parties', JSON.stringify(parties.map(({ core, ...rest }) => rest)));
 		if (isActive(demoSwing)) p.set('groups', JSON.stringify(demoSwing));
 		return p.toString();
 	}
@@ -231,6 +228,10 @@
 	}
 
 	function fill(r: Region): string {
+		if (shading === 'residual') {
+			const rb = bases[currentId]?.regions.get(r.id);
+			return rb ? residualFill(residualPoints(rb), byId) : 'var(--unrated)';
+		}
 		return ctx ? outcomeFill(outcome(r, ctx), byId, shading) : 'var(--unrated)';
 	}
 </script>
@@ -279,16 +280,21 @@
 			{/if}
 			{#if electionInfo?.cells && hasBaseline}
 				<h3>Voter groups</h3>
-				<DemographicPanel regions={map.regions} cells={electionInfo.cells} bind:swing={demoSwing} />
+				{#if ctx?.sim}<DemographicPanel sim={ctx.sim} cells={electionInfo.cells} bind:swing={demoSwing} />{/if}
 			{/if}
 			{#if Object.keys(ov).length}
 				<button type="button" class="link" onclick={() => (overrides[currentId] = {})}>clear {Object.keys(ov).length} manual ratings</button>
 			{/if}
 
 			<h3>Parties</h3>
-			<PartyPanel bind:parties {groups} audiences={audienceOptions} />
+			<PartyPanel bind:parties {groups} audiences={audienceOptions} sim={ctx?.sim ?? null} />
 
-			<CompareTable {maps} {currentId} {parties} {swing} {overrides} />
+			{#if electionInfo?.cells && ctx?.sim}
+				<h3>Vote by group</h3>
+				<VoteMatrix sim={ctx.sim} {parties} cells={electionInfo.cells} custom={audienceOptions.filter((a) => a.custom)} />
+			{/if}
+
+			<CompareTable {maps} {bases} {currentId} {scenario} {overrides} />
 
 			{#if focusGroup && groupTally}
 				<StatePanel group={focusGroup} tally={groupTally} {parties} {report} onback={() => (focusGroup = null)} />
@@ -306,7 +312,8 @@
 		x={hover.x}
 		y={hover.y}
 		{byId}
-		{swing}
+		residual={bases[currentId]?.regions.get(hover.r.id)}
+		hasCells={!!electionInfo?.cells}
 		electionLabel={electionInfo?.label ?? 'Baseline'}
 	/>
 {/if}

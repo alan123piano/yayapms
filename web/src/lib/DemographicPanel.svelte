@@ -1,20 +1,20 @@
 <script lang="ts">
 	import { DEMO_DIM_LABELS, DEMO_LIMITS } from './config';
-	import {
-		describe, emptySwing, isActive, MAX_CUSTOM_SEGMENTS, statsFor,
-		type DemoSwing, type Filter, type GroupStat, type Segment
-	} from './demographics';
+	import { describe, isActive, MAX_CUSTOM_SEGMENTS, type DemoSwing, type Filter, type Segment } from './demographics';
 	import { swingLabel } from './format';
 	import Scrubber, { stepped } from './Scrubber.svelte';
-	import type { CellData, Region } from './types';
+	import type { Simulation } from './model';
+	import type { CellData } from './types';
 
 	interface Props {
-		/** regions of the current map (for the electorate summary) */
-		regions: Region[];
+		/** the current scenario on the current map (for the electorate summary) */
+		sim: Simulation;
 		cells: CellData;
 		swing: DemoSwing;
 	}
-	let { regions, cells, swing = $bindable() }: Props = $props();
+	let { sim, cells, swing = $bindable() }: Props = $props();
+
+	interface GroupStat { voterShare: number; demBefore: number; demAfter: number; turnoutAfter: number }
 
 	const CUSTOM = 'custom';
 	const VOTE = { stops: stepped(-DEMO_LIMITS.vote, DEMO_LIMITS.vote, 1), every: 5 };
@@ -32,7 +32,13 @@
 		}
 		return cells.dims[tab].map((g) => ({ id: `${tab}=${g}`, filter: { [tab]: [g] }, title: g, custom: false }));
 	});
-	let stats = $derived(statsFor(regions, cells, rows.map((r) => r.filter), swing));
+	let stats = $derived(
+		rows.map((r): GroupStat => {
+			const g = sim.group(r.filter);
+			const dr = (g.shares.D ?? 0) + (g.shares.R ?? 0);
+			return { voterShare: g.voterShare, demBefore: g.before.dem, demAfter: dr ? g.shares.D / dr : 0, turnoutAfter: g.turnout };
+		})
+	);
 	let customCount = $derived(swing.segments.filter((g) => g.custom).length);
 	const pct = (x: number) => `${Math.round(x * 100)}%`;
 

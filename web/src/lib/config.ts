@@ -12,16 +12,18 @@ export const DEFAULT_ELECTION = 'pres-2020';
 
 // ---------- parties ----------
 export const MAX_PARTIES = 8;
+/** target voter groups per party */
+export const MAX_APPEALS = 6;
 export const DEFAULT_PARTIES: Party[] = [
-	{ id: 'D', name: 'Democratic', color: '#2f6fdd', core: true, share: 0, fromD: 100, states: [] },
-	{ id: 'R', name: 'Republican', color: '#d8333a', core: true, share: 0, fromD: 0, states: [] }
+	{ id: 'D', name: 'Democratic', color: '#2f6fdd', core: true, share: 0, fromD: 100, states: [], appeals: [] },
+	{ id: 'R', name: 'Republican', color: '#d8333a', core: true, share: 0, fromD: 0, states: [], appeals: [] }
 ];
 /** "Load example scenario": a UK-flavoured four-party-plus-regional setup */
 export const EXAMPLE_PARTIES: Party[] = [
-	{ id: 'p1', name: 'Progressive', color: '#2aa876', share: 11, fromD: 90, states: [] },
-	{ id: 'p2', name: 'Forward', color: '#f2a900', share: 16, fromD: 50, states: [] },
-	{ id: 'p3', name: 'America First', color: '#13a8c4', share: 13, fromD: 10, states: [] },
-	{ id: 'p4', name: 'Lone Star', color: '#9c5b2e', share: 22, fromD: 35, states: ['TX'] }
+	{ id: 'p1', name: 'Progressive', color: '#2aa876', share: 11, fromD: 90, states: [], appeals: [] },
+	{ id: 'p2', name: 'Forward', color: '#f2a900', share: 16, fromD: 50, states: [], appeals: [] },
+	{ id: 'p3', name: 'America First', color: '#13a8c4', share: 13, fromD: 10, states: [], appeals: [] },
+	{ id: 'p4', name: 'Lone Star', color: '#9c5b2e', share: 22, fromD: 35, states: ['TX'], appeals: [] }
 ];
 /** colors offered to newly added parties, in order */
 export const NEW_PARTY_COLORS = ['#2aa876', '#f2a900', '#13a8c4', '#9c5b2e', '#8e44ad', '#e67e22', '#7f8c8d'];
@@ -34,7 +36,8 @@ export const RATING_THRESHOLDS = [3, 8, 15] as const;
 export const SHADINGS = [
 	{ id: 'solid', label: 'Solid', hint: 'Full color for whoever wins' },
 	{ id: 'tiers', label: 'Tiers', hint: 'Safe / Likely / Lean / Tilt: 15+, 8-15, 3-8, <3 point lead' },
-	{ id: 'gradient', label: 'Gradient', hint: 'Fades smoothly toward a tie; full color at a 25+ point lead' }
+	{ id: 'gradient', label: 'Gradient', hint: 'Fades smoothly toward a tie; full color at a 25+ point lead' },
+	{ id: 'residual', label: 'Residual', hint: 'How much more D or R each district voted than its demographics predict; full color at 40+ points' }
 ] as const;
 export type ShadingId = (typeof SHADINGS)[number]['id'];
 /** color strength (%) per rating level [-, Tilt, Lean, Likely, Safe] in Tiers mode */
@@ -42,6 +45,8 @@ export const TIER_STRENGTH = [0, 28, 48, 72, 100];
 /** Gradient mode: strength at a tie, and the lead (points) that reaches full color */
 export const GRADIENT_MIN_STRENGTH = 12;
 export const GRADIENT_FULL_AT = 25;
+/** Residual mode: residual (margin points) that reaches full color */
+export const RESIDUAL_FULL_AT = 40;
 /** stand-in margin per level for hand-painted districts in Gradient mode */
 export const TIER_TYPICAL_MARGIN = [0, 1.5, 5.5, 11.5, 20];
 

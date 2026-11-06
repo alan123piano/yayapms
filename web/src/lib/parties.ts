@@ -1,4 +1,4 @@
-import { DEFAULT_PARTIES, EXAMPLE_PARTIES, MAX_PARTIES } from './config';
+import { DEFAULT_PARTIES, EXAMPLE_PARTIES, MAX_APPEALS, MAX_PARTIES } from './config';
 import type { Party } from './types';
 
 export function coreParties(): Party[] {
@@ -21,8 +21,8 @@ const ID = /^(D|R|p\d{1,3})$/;
 const GROUP = /^[A-Za-z0-9 _.-]{1,40}$/;
 
 const AUD = /^[A-Za-z0-9 +\-]{1,30}$/;
-/** Shape-check an untrusted audience filter ({dim: [groups]}); unknown groups simply match nobody. */
-function audience(raw: unknown): Party['audience'] {
+/** Shape-check an untrusted voter-group filter ({dim: [groups]}); unknown groups simply match nobody. */
+function filter(raw: unknown): Record<string, string[]> | undefined {
 	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
 	const out: Record<string, string[]> = {};
 	for (const [dim, groups] of Object.entries(raw as Record<string, unknown>).slice(0, 10)) {
@@ -44,17 +44,26 @@ export function sanitizeParties(raw: unknown): Party[] | null {
 		if (!ID.test(id) || out.some((q) => q.id === id)) return null;
 		const num = (v: unknown, lo: number, hi: number) =>
 			typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : lo;
+		const appeals: Party['appeals'] = [];
+		for (const a of Array.isArray(p.appeals) ? p.appeals.slice(0, MAX_APPEALS) : []) {
+			const f = filter((a as Record<string, unknown> | null)?.filter);
+			if (f) appeals.push({ filter: f, share: num((a as Record<string, unknown>).share, 0, 100) });
+		}
+		// older links: one `audience` group, won at `share`%, and nothing elsewhere
+		const legacy = filter(p.audience);
+		if (legacy && !appeals.length) appeals.push({ filter: legacy, share: num(p.share, 0, 100) });
+		const core = id === 'D' || id === 'R';
 		out.push({
 			id,
 			name: String(p.name ?? id).slice(0, 40) || id,
 			color: typeof p.color === 'string' && HEX.test(p.color) ? p.color : '#888888',
-			core: id === 'D' || id === 'R',
-			share: id === 'D' || id === 'R' ? 0 : num(p.share, 0, 60),
+			core,
+			share: core || legacy ? 0 : num(p.share, 0, 60),
 			fromD: id === 'D' ? 100 : id === 'R' ? 0 : num(p.fromD, 0, 100),
 			states: Array.isArray(p.states)
 				? p.states.filter((s): s is string => typeof s === 'string' && GROUP.test(s)).slice(0, 60)
 				: [],
-			audience: audience(p.audience)
+			appeals
 		});
 	}
 	if (!out.some((p) => p.id === 'D') || !out.some((p) => p.id === 'R')) return null;

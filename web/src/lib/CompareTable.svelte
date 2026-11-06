@@ -1,23 +1,26 @@
 <script lang="ts">
 	import { fmtMargin } from './format';
 	import { spectrumOrder } from './parties';
+	import type { Basis, Scenario } from './model';
 	import { buildContext, tally, tippingSwing } from './sim';
-	import type { LoadedMap, Override, Party } from './types';
+	import type { LoadedMap, Override } from './types';
 
 	interface Props {
 		/** all loaded maps, with results for the selected election */
 		maps: Record<string, LoadedMap>;
+		/** fitted vote model per map */
+		bases: Record<string, Basis>;
 		currentId: string;
-		parties: Party[];
-		swing: number;
+		scenario: Scenario;
 		overrides: Record<string, Record<string, Override>>;
 	}
-	let { maps, currentId, parties, swing, overrides }: Props = $props();
+	let { maps, bases, currentId, scenario, overrides }: Props = $props();
+	let parties = $derived(scenario.parties);
 
 	let twoParty = $derived(parties.length === 2);
 	let dName = $derived(parties.find((p) => p.id === 'D')?.name);
 
-	// Same swing and parties on every map, limited to states present in the current map
+	// Same scenario on every map, limited to states present in the current map
 	// so a partially covered map compares like-for-like.
 	let rows = $derived.by(() => {
 		const cur = maps[currentId];
@@ -27,8 +30,8 @@
 			.filter((m) => m.regions.some((r) => r.demShare !== null))
 			.map((m) => {
 				const rs = m.regions.filter((r) => scope.has(r.group));
-				const c = buildContext(rs, parties, swing, overrides[m.manifest.id] ?? {});
-				return { id: m.manifest.id, name: m.manifest.name, t: tally(rs, c), tip: twoParty ? tippingSwing(rs) : null };
+				const c = buildContext(bases[m.manifest.id], rs, scenario, overrides[m.manifest.id] ?? {});
+				return { id: m.manifest.id, name: m.manifest.name, t: tally(rs, c), tip: twoParty ? tippingSwing(rs, c) : null };
 			});
 	});
 	let cols = $derived(spectrumOrder(parties).filter((p) => p.core || rows.some((r) => r.t.seats[p.id])));

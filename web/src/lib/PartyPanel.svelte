@@ -1,33 +1,61 @@
 <script lang="ts">
-	import { MAX_PARTIES, NEW_PARTY_COLORS } from './config';
-	import { describe, filterKey, type Filter } from './demographics';
+	import { MAX_APPEALS, MAX_PARTIES, NEW_PARTY_COLORS } from './config';
+	import { describe, filterKey, type GroupOption } from './demographics';
+	import type { Simulation } from './model';
 	import { nextPartyId, presetParties } from './parties';
-	import type { Party } from './types';
 	import Scrubber, { stepped } from './Scrubber.svelte';
+	import type { Appeal, Party } from './types';
 
 	interface Props {
 		parties: Party[];
 		/** groups (states) available on the current map, for regional parties */
 		groups: string[];
-		/** voter groups a party can appeal to (empty if the election has no demographic data) */
-		audiences: { key: string; label: string; filter: Filter }[];
+		/** voter groups a party can target (empty if the election has no demographic data) */
+		audiences: GroupOption[];
+		/** the current scenario, to show where each target actually lands */
+		sim: Simulation | null;
 	}
-	let { parties = $bindable(), groups, audiences }: Props = $props();
+	let { parties = $bindable(), groups, audiences, sim }: Props = $props();
 
-	const audienceValue = (p: Party) => (p.audience ? filterKey(p.audience) : '');
-	function setAudience(p: Party, v: string) {
-		const a = audiences.find((x) => x.key === v);
-		p.audience = a ? structuredClone($state.snapshot(a.filter)) : undefined;
+	const PCT = stepped(0, 100, 1);
+	const PCT_TICKS = PCT.filter((x) => x % 10 === 0);
+	const SHARE = stepped(0, 50, 1);
+	const SHARE_TICKS = SHARE.filter((x) => x % 5 === 0);
+	const fmtPct = (x: number) => `${x}%`;
+
+	/** this party's current share of a group (%), from the model */
+	const now = (p: Party, a: Appeal) => Math.round((sim?.group(a.filter).shares[p.id] ?? 0) * 100);
+
+	/** options for one target row: groups the party doesn't already target, plus this row's own
+	 *  (kept even if its custom group was since deleted) */
+	function optionsFor(p: Party, a: Appeal): GroupOption[] {
+		const mine = filterKey(a.filter);
+		const taken = new Set(p.appeals.map((x) => filterKey(x.filter)));
+		const opts = audiences.filter((o) => o.key === mine || !taken.has(o.key));
+		if (!opts.some((o) => o.key === mine)) {
+			opts.push({ key: mine, label: describe(a.filter, Object.keys(a.filter)), filter: a.filter, custom: true });
+		}
+		return opts;
 	}
-	/** a party's audience is shown even if its custom group was since deleted */
-	const optionsFor = (p: Party) =>
-		p.audience && !audiences.some((a) => a.key === filterKey(p.audience!))
-			? [...audiences, { key: filterKey(p.audience), label: describe(p.audience, Object.keys(p.audience)), filter: p.audience }]
-			: audiences;
+	const dimsOf = (opts: GroupOption[]) => [...new Set(opts.filter((o) => !o.custom).map((o) => o.dim ?? ''))];
+
+	function addAppeal(p: Party) {
+		const taken = new Set(p.appeals.map((x) => filterKey(x.filter)));
+		const o = audiences.find((x) => !taken.has(x.key));
+		if (!o) return;
+		const a: Appeal = { filter: structuredClone($state.snapshot(o.filter)), share: 0 };
+		a.share = now(p, a); // start where the party already is, so adding a target moves nothing
+		p.appeals.push(a);
+	}
+	function setAppealGroup(p: Party, k: number, key: string) {
+		const o = audiences.find((x) => x.key === key);
+		if (!o) return;
+		const a: Appeal = { filter: structuredClone($state.snapshot(o.filter)), share: 0 };
+		a.share = now(p, a);
+		p.appeals[k] = a;
+	}
 	function shareLabel(p: Party): string {
-		const where = p.states.length ? ` in ${p.states.join(', ')}` : '';
-		if (p.audience) return ` of ${describe(p.audience, Object.keys(p.audience))} voters${where}`;
-		return where || ' nationally';
+		return p.states.length ? ` in ${p.states.join(', ')}` : p.appeals.length ? '' : ' nationally';
 	}
 
 	let extras = $derived(parties.filter((p) => !p.core));
@@ -43,7 +71,8 @@
 			color: NEW_PARTY_COLORS.find((c) => !used.has(c)) ?? '#888888',
 			share: 10,
 			fromD: 50,
-			states: []
+			states: [],
+			appeals: []
 		});
 	}
 
@@ -62,12 +91,6 @@
 			.filter((s) => s && groups.includes(s));
 	}
 
-	/** national parties top out at 50%; a party aimed at one voter group can win all of it */
-	function shareScale(p: Party) {
-		const max = p.audience ? 100 : 50;
-		const stops = stepped(0, max, 1);
-		return { stops, ticks: stops.filter((x) => x % (max / 10) === 0), labels: [0, max / 2, max] };
-	}
 	const DRAW = stepped(0, 100, 5);
 	const drawTick = (fromD: number) =>
 		fromD === 50 ? 'even' : `all ${(fromD > 50 ? dParty?.name : rParty?.name) ?? (fromD > 50 ? 'D' : 'R')}`;
@@ -88,18 +111,9 @@
 				{/if}
 			</div>
 			{#if !p.core}
-				{#if audiences.length}
-					<label>
-						<span>Appeals to</span>
-						<select value={audienceValue(p)} onchange={(e) => setAudience(p, e.currentTarget.value)}>
-							<option value="">Everyone</option>
-							{#each optionsFor(p) as a (a.key)}<option value={a.key}>{a.label}</option>{/each}
-						</select>
-					</label>
-				{/if}
 				<label>
-					<span>Vote share <b>{p.share}%</b>{shareLabel(p)}</span>
-					<Scrubber bind:value={p.share} {...shareScale(p)} format={(x) => `${x}%`} />
+					<span>{p.appeals.length ? 'Everyone else' : 'Vote share'} <b>{p.share}%</b>{shareLabel(p)}</span>
+					<Scrubber bind:value={p.share} stops={SHARE} ticks={SHARE_TICKS} labels={[0, 25, 50]} format={fmtPct} />
 				</label>
 				<label>
 					<span>Draws <b>{drawLabel(p.fromD)}</b></span>
@@ -115,6 +129,33 @@
 					/>
 				</label>
 			{/if}
+			{#each p.appeals as a, k (k)}
+				{@const opts = optionsFor(p, a)}
+				<div class="appeal">
+					<div class="row">
+						<select value={filterKey(a.filter)} onchange={(e) => setAppealGroup(p, k, e.currentTarget.value)} aria-label="Target group">
+							{#each dimsOf(opts) as d (d)}
+								<optgroup label={d}>
+									{#each opts.filter((o) => !o.custom && (o.dim ?? '') === d) as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
+								</optgroup>
+							{/each}
+							{#if opts.some((o) => o.custom)}
+								<optgroup label="Custom">
+									{#each opts.filter((o) => o.custom) as o (o.key)}<option value={o.key}>{o.label}</option>{/each}
+								</optgroup>
+							{/if}
+						</select>
+						<button type="button" class="x" onclick={() => p.appeals.splice(k, 1)} aria-label="Stop targeting this group">×</button>
+					</div>
+					<label>
+						<span>Wins <b>{a.share}%</b> of them <span class="muted">(now {now(p, a)}%)</span></span>
+						<Scrubber bind:value={a.share} stops={PCT} ticks={PCT_TICKS} labels={[0, 50, 100]} format={fmtPct} />
+					</label>
+				</div>
+			{/each}
+			{#if audiences.length}
+				<button type="button" class="link" onclick={() => addAppeal(p)} disabled={p.appeals.length >= MAX_APPEALS}>+ target a voter group</button>
+			{/if}
 		</div>
 {/each}
 
@@ -128,8 +169,10 @@
 {/if}
 {#if extras.length}
 	<p class="muted small">
-		Each new party wins the same fraction of its source party's voters everywhere it runs (UK-style
-		proportional swing), and each district goes to whoever gets the most votes.
+		A party wins over voters from each side at the same rate in every district where it runs, so
+		it is strongest where its source party is. Targets set its share of a group nationally; the
+		Vote by group table shows where every party ends up. Each district goes to whoever gets the
+		most votes.
 	</p>
 {/if}
 
@@ -177,6 +220,22 @@
 	}
 	.states {
 		width: 100%;
+	}
+	.appeal {
+		margin-top: 8px;
+		padding-left: 8px;
+		border-left: 2px solid var(--border);
+	}
+	.appeal select {
+		flex: 1;
+		min-width: 0;
+		font-size: 0.85rem;
+	}
+	.appeal label {
+		margin-top: 4px;
+	}
+	.appeal label > span {
+		white-space: nowrap;
 	}
 	.actions {
 		display: flex;
