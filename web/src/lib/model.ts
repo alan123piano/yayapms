@@ -55,15 +55,17 @@ export interface RegionBasis {
 	rho: number;
 	/** real two-party D share */
 	actual: number;
-	/** D share its demographics alone predict (ρ = 0) */
+	/** D share if every cell voted at its national rate (demographics alone) */
 	expected: number;
 }
 
 export interface Basis {
 	n: number;
 	labels: Record<string, string>[];
-	/** national D-vs-R logit per cell */
+	/** national D-vs-R logit per cell (fitted jointly with the residuals) */
 	alpha: Float64Array;
+	/** each cell's national two-party D rate */
+	rate: Float64Array;
 	regions: Map<string, RegionBasis>;
 }
 
@@ -106,7 +108,8 @@ export function fitBasis(regions: Region[], cells?: CellData): Basis {
 	// district): rescale the cell targets so both sets of constraints can hold exactly
 	const kT = rows.reduce((a, r, j) => a + r.actual * tot[j], 0) / (sum(T) || 1);
 	for (let i = 0; i < n; i++) T[i] = Math.min(Vc[i], T[i] * kT);
-	for (let i = 0; i < n; i++) alpha[i] = Vc[i] > 0 ? logit(T[i] / Vc[i]) : 0;
+	const rate = Float64Array.from(T, (t, i) => (Vc[i] > 0 ? t / Vc[i] : 0));
+	for (let i = 0; i < n; i++) alpha[i] = Vc[i] > 0 ? logit(rate[i]) : 0;
 
 	for (let sweep = 0; sweep < 1000; sweep++) {
 		// districts: Σ_c V σ(α + ρ) = actual · ΣV
@@ -156,10 +159,26 @@ export function fitBasis(regions: Region[], cells?: CellData): Basis {
 	for (let i = 0; i < n; i++) alpha[i] += k;
 	rows.forEach((r, j) => {
 		let e = 0;
-		for (let i = 0; i < n; i++) e += r.V[i] * sig(alpha[i]);
+		for (let i = 0; i < n; i++) e += r.V[i] * rate[i];
 		r.expected = tot[j] ? e / tot[j] : r.actual;
 	});
-	return { n, labels, alpha, regions: new Map(rows.map((r) => [r.id, r])) };
+	return { n, labels, alpha, rate, regions: new Map(rows.map((r) => [r.id, r])) };
+}
+
+/**
+ * The demographics-only baseline: every cell votes at its national rate in every district
+ * (no residual). National totals and each group's national share are unchanged; districts
+ * differ only by who lives there.
+ */
+export function demographicsOnly(b: Basis): Basis {
+	const alpha = Float64Array.from(b.rate, (p) => (p <= 0 ? -LIM : p >= 1 ? LIM : logit(p)));
+	const regions = new Map(
+		[...b.regions].map(([id, r]) => [
+			id,
+			{ ...r, rho: 0, actual: r.expected, D: r.V.map((v, i) => v * b.rate[i]) }
+		])
+	);
+	return { ...b, alpha, regions };
 }
 
 /** District residual in margin points: real result minus what its demographics predict (+ = more D). */

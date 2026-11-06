@@ -6,6 +6,8 @@
 		currentId: string;
 		elections: Election[];
 		election: string;
+		/** baseline without district residuals: every voter group votes at its national rate */
+		demoOnly: boolean;
 		groups: string[];
 		focusGroup: string | null;
 		loading: boolean;
@@ -15,7 +17,7 @@
 		height?: number;
 	}
 	let {
-		maps, currentId, elections, election = $bindable(), groups, focusGroup = $bindable(),
+		maps, currentId, elections, election = $bindable(), demoOnly = $bindable(), groups, focusGroup = $bindable(),
 		loading, onselectmap, onimport, height = $bindable()
 	}: Props = $props();
 </script>
@@ -28,9 +30,19 @@
 		</select>
 	</label>
 	{#if elections.length}
-		<label class="pick">Election
-			<select bind:value={election}>
-				{#each elections as e (e.id)}<option value={e.id}>{e.label}</option>{/each}
+		<label class="pick">Baseline
+			<select
+				value={demoOnly ? `${election}|demo` : election}
+				onchange={(e) => {
+					const [id, demo] = e.currentTarget.value.split('|');
+					election = id;
+					demoOnly = demo === 'demo';
+				}}
+			>
+				{#each elections as e (e.id)}
+					<option value={e.id}>{e.label}</option>
+					{#if e.cells}<option value="{e.id}|demo">{e.label}, demographics only</option>{/if}
+				{/each}
 			</select>
 		</label>
 	{/if}

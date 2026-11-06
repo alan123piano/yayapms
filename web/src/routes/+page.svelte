@@ -21,7 +21,7 @@
 	} from '#lib/config.ts';
 	import { describe, emptySwing, filterKey, isActive, sanitizeSwing, type GroupOption } from '#lib/demographics.ts';
 	import { loadPack, withElection } from '#lib/loader.ts';
-	import { fitBasis, residualPoints, type Basis, type Scenario } from '#lib/model.ts';
+	import { demographicsOnly, fitBasis, residualPoints, type Basis, type Scenario } from '#lib/model.ts';
 	import { coreParties, sanitizeParties } from '#lib/parties.ts';
 	import { outcomeFill, residualFill } from '#lib/shading.ts';
 	import { buildContext, outcome, tally } from '#lib/sim.ts';
@@ -33,6 +33,8 @@
 	let loaded = $state.raw<Record<string, LoadedMap>>({});
 	let currentId = $state('');
 	let election = $state(DEFAULT_ELECTION);
+	/** baseline without district residuals (see model.demographicsOnly) */
+	let demoOnly = $state(false);
 	let swing = $state(0);
 	/** per-group vote/turnout changes (Voter groups panel) */
 	let demoSwing = $state(emptySwing());
@@ -50,16 +52,37 @@
 
 	// ---------- derived ----------
 	/** every map with region results from the selected election */
-	let maps = $derived(Object.fromEntries(Object.entries(loaded).map(([id, m]) => [id, withElection(m, election)])));
+	let electionMaps = $derived(Object.fromEntries(Object.entries(loaded).map(([id, m]) => [id, withElection(m, election)])));
 	/** the fitted vote model per map: national cell matrix + district residuals (model.ts) */
+	let fitted = $derived(
+		Object.fromEntries(
+			Object.entries(electionMaps).map(([id, m]) => [id, fitBasis(m.regions, m.elections.find((e) => e.id === election)?.cells)])
+		) as Record<string, Basis>
+	);
+	const hasCellsFor = (id: string) => !!loaded[id]?.elections.find((e) => e.id === election)?.cells;
+	/** the baseline the simulation starts from: the real election, or demographics only */
 	let bases = $derived(
 		Object.fromEntries(
-			Object.entries(maps).map(([id, m]) => [id, fitBasis(m.regions, m.elections.find((e) => e.id === election)?.cells)])
+			Object.entries(fitted).map(([id, b]) => [id, demoOnly && hasCellsFor(id) ? demographicsOnly(b) : b])
 		) as Record<string, Basis>
+	);
+	/** maps whose region baselines (demShare) are the selected baseline */
+	let maps = $derived(
+		Object.fromEntries(
+			Object.entries(electionMaps).map(([id, m]) => {
+				if (!demoOnly || !hasCellsFor(id)) return [id, m];
+				const b = bases[id];
+				return [id, { ...m, regions: m.regions.map((r) => {
+					const rb = b.regions.get(r.id);
+					return rb ? { ...r, demShare: rb.actual } : r;
+				}) }];
+			})
+		) as Record<string, LoadedMap>
 	);
 	let scenario = $derived<Scenario>({ swing, segments: demoSwing.segments, parties });
 	let map = $derived(maps[currentId]);
 	let electionInfo = $derived(map?.elections.find((e) => e.id === election));
+	let baselineLabel = $derived(electionInfo ? `${electionInfo.label}${demoOnly && electionInfo.cells ? ' (demographics only)' : ''}` : 'Baseline');
 	let byId = $derived(Object.fromEntries(parties.map((p) => [p.id, p])) as Record<string, Party>);
 	let ov = $derived(overrides[currentId] ?? {});
 	let ctx = $derived(map ? buildContext(bases[currentId], map.regions, scenario, ov) : null);
@@ -137,6 +160,7 @@
 	function encodeHash(): string {
 		const o = Object.entries(ov).map(([k, v]) => `${k}:${v.p}${v.l}`).join(',');
 		const p = new URLSearchParams({ map: currentId, election, swing: String(swing) });
+		if (demoOnly) p.set('baseline', 'demographics');
 		if (o) p.set('o', o);
 		if (focusGroup) p.set('focus', focusGroup);
 		if (parties.length > 2 || parties.some((x) => x.appeals.length)) p.set('parties', JSON.stringify(parties.map(({ core, ...rest }) => rest)));
@@ -159,6 +183,7 @@
 		if (e && /^[a-z0-9-]{1,40}$/.test(e)) election = e;
 		const sw = Number(p.get('swing'));
 		if (Number.isFinite(sw) && Math.abs(sw) <= SWING_MAX) swing = sw;
+		demoOnly = p.get('baseline') === 'demographics';
 		const id = p.get('map');
 		const o: Record<string, Override> = {};
 		for (const part of (p.get('o') ?? '').split(',').filter(Boolean)) {
@@ -229,7 +254,7 @@
 
 	function fill(r: Region): string {
 		if (shading === 'residual') {
-			const rb = bases[currentId]?.regions.get(r.id);
+			const rb = fitted[currentId]?.regions.get(r.id);
 			return rb ? residualFill(residualPoints(rb), byId) : 'var(--unrated)';
 		}
 		return ctx ? outcomeFill(outcome(r, ctx), byId, shading) : 'var(--unrated)';
@@ -243,6 +268,7 @@
 	{currentId}
 	elections={map?.elections ?? []}
 	bind:election
+	bind:demoOnly
 	{groups}
 	bind:focusGroup
 	{loading}
@@ -276,7 +302,7 @@
 		{#if t && map}
 			<SeatSummary tally={t} {parties} />
 			{#if hasBaseline}
-				<SwingSlider bind:swing baseline={electionInfo?.label ?? 'baseline'} />
+				<SwingSlider bind:swing baseline={baselineLabel} />
 			{/if}
 			{#if electionInfo?.cells && hasBaseline}
 				<h3>Voter groups</h3>
@@ -312,9 +338,9 @@
 		x={hover.x}
 		y={hover.y}
 		{byId}
-		residual={bases[currentId]?.regions.get(hover.r.id)}
+		residual={fitted[currentId]?.regions.get(hover.r.id)}
 		hasCells={!!electionInfo?.cells}
-		electionLabel={electionInfo?.label ?? 'Baseline'}
+		electionLabel={baselineLabel}
 	/>
 {/if}
 

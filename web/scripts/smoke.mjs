@@ -136,11 +136,21 @@ try {
 			for (let c = 0; c < n; c++) { V += rb0.V[c]; if (basis.labels[c].age === '18-29') Y += Math.min(rb0.V[c] * 1.2, rb0.C[c] * 0.995); }
 			near(ct.sim.votes.get(r0.id), V - [...Array(n).keys()].filter((c) => basis.labels[c].age === '18-29').reduce((a, c) => a + rb0.V[c], 0) + Y, 1e-6, 'youth turnout +20%');
 
+			// demographics-only baseline: each cell at its national rate; national group shares unchanged
+			const demo = M.demographicsOnly(basis);
+			const cdemo = ctxOf(demo, rs, core);
+			for (const r of rs) near(S.shares(r, cdemo).D, basis.regions.get(r.id).expected, 1e-9, `${r.id}: demographics-only district`);
+			for (const f of [{}, { race: ['Black'] }, { age: ['18-29'], sex: ['Men'] }, { edu: ['College'] }]) {
+				near(cdemo.sim.group(f).shares.D, ctx0.sim.group(f).shares.D, 1e-6, `demographics-only keeps national share of ${JSON.stringify(f)}`);
+			}
+			const tDemo = S.tally(rs, cdemo);
+			const demoPopular = cdemo.sim.group({}).shares.D;
+
 			// residuals: vote-weighted mean 0
 			const res = rs.map((r) => M.residualPoints(basis.regions.get(r.id)));
 			console.log(`${id} ${eid}: fit ${fitMs.toFixed(0)}ms | D ${t0s.seats.D} R ${t0s.seats.R} | preset: ` +
 				Object.entries(tm.seats).map(([k, n]) => `${parties.find((q) => q.id === k).name} ${n}`).join(', ') +
-				` | youth +10 -> D ${S.tally(rs, cs).seats.D} | residual sd ${Math.sqrt(res.reduce((a, x) => a + x * x, 0) / res.length).toFixed(1)} pts`);
+				` | youth +10 -> D ${S.tally(rs, cs).seats.D} | demographics only: D ${tDemo.seats.D} R ${tDemo.seats.R} (D ${(demoPopular * 100).toFixed(1)}%) | residual sd ${Math.sqrt(res.reduce((a, x) => a + x * x, 0) / res.length).toFixed(1)} pts`);
 
 			// overrides: an override for an inactive party is ignored
 			assert.equal(S.outcome(r0, ctxOf(basis, rs, core, 0, [], { [r0.id]: { p: 'p2', l: 4 } })).manual, false);
