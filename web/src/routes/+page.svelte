@@ -317,7 +317,7 @@
 
 			{#if electionInfo?.cells && ctx?.sim}
 				<h3>Vote by group</h3>
-				<VoteMatrix sim={ctx.sim} {parties} cells={electionInfo.cells} custom={audienceOptions.filter((a) => a.custom)} />
+				<VoteMatrix sim={ctx.sim} {parties} cells={electionInfo.cells} custom={audienceOptions.filter((a) => a.custom)} {baselineLabel} />
 			{/if}
 
 			<CompareTable {maps} {bases} {currentId} {scenario} {overrides} />

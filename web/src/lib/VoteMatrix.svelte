@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { DEMO_DIM_LABELS } from './config';
+	import MatrixDialog from './MatrixDialog.svelte';
 	import { filterKey, type Filter, type GroupOption } from './demographics';
 	import { isLive, type Simulation } from './model';
 	import { spectrumOrder } from './parties';
@@ -12,8 +13,10 @@
 		cells: CellData;
 		/** custom voter groups, shown after the single groups */
 		custom: GroupOption[];
+		baselineLabel: string;
 	}
-	let { sim, parties, cells, custom }: Props = $props();
+	let { sim, parties, cells, custom, baselineLabel }: Props = $props();
+	let full = $state(false);
 
 	let cols = $derived(spectrumOrder(parties.filter(isLive)));
 	/** "party|filterKey" for every target, so targeted cells can be marked */
@@ -61,6 +64,8 @@
 		{/each}
 	</table>
 </div>
+<button type="button" class="more" onclick={() => (full = true)}>Full table: every combination…</button>
+{#if full}<MatrixDialog {sim} {parties} {cells} {baselineLabel} onclose={() => (full = false)} />{/if}
 <p class="muted small">
 	% of each group's votes won by each party, nationally, after every setting above. Underlined:
 	a party's target group.
@@ -73,6 +78,10 @@
 <style>
 	.wrap {
 		overflow-x: auto;
+	}
+	.more {
+		margin-top: 6px;
+		font-size: 0.85rem;
 	}
 	table {
 		border-collapse: collapse;

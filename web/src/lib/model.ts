@@ -66,6 +66,9 @@ export interface Basis {
 	alpha: Float64Array;
 	/** each cell's national two-party D rate */
 	rate: Float64Array;
+	/** the same rates if the dimensions combined independently: a main-effects-only logit
+	 *  fitted to every single group's national total (no interactions) */
+	additive: Float64Array;
 	regions: Map<string, RegionBasis>;
 }
 
@@ -162,7 +165,44 @@ export function fitBasis(regions: Region[], cells?: CellData): Basis {
 		for (let i = 0; i < n; i++) e += r.V[i] * rate[i];
 		r.expected = tot[j] ? e / tot[j] : r.actual;
 	});
-	return { n, labels, alpha, rate, regions: new Map(rows.map((r) => [r.id, r])) };
+	return { n, labels, alpha, rate, additive: mainEffects(labels, Vc, T), regions: new Map(rows.map((r) => [r.id, r])) };
+}
+
+/**
+ * Main-effects-only fit: logit P(D | cell) = Σ_dim β_dim,group, solved so every single group's
+ * national D total matches (the maximum-likelihood fit, by raking in logit space).
+ */
+function mainEffects(labels: Record<string, string>[], V: Float64Array, T: Float64Array): Float64Array {
+	const n = labels.length;
+	const dims = Object.keys(labels[0] ?? {});
+	const beta = new Map<string, number>();
+	const key = (d: string, i: number) => `${d}=${labels[i][d]}`;
+	const eta = (i: number) => dims.reduce((a, d) => a + (beta.get(key(d, i)) ?? 0), 0);
+	const total = sum(T) / (sum(V) || 1);
+	if (!dims.length) return Float64Array.from(V, () => total);
+	for (let sweep = 0; sweep < 200; sweep++) {
+		let worst = 0;
+		for (const d of dims) {
+			for (const g of new Set(labels.map((l) => l[d]))) {
+				const k = `${d}=${g}`;
+				for (let step = 0; step < 2; step++) {
+					let f = 0, df = 0, vg = 0;
+					for (let i = 0; i < n; i++) {
+						if (labels[i][d] !== g || !V[i]) continue;
+						const p = sig(eta(i));
+						f += V[i] * p - T[i];
+						df += V[i] * p * (1 - p);
+						vg += V[i];
+					}
+					if (!vg || df < 1e-12) break;
+					if (step === 0) worst = Math.max(worst, Math.abs(f) / vg);
+					beta.set(k, clampLim((beta.get(k) ?? 0) - f / df));
+				}
+			}
+		}
+		if (worst < 1e-10) break;
+	}
+	return Float64Array.from(labels, (_, i) => sig(eta(i)));
 }
 
 /**
@@ -217,6 +257,8 @@ export interface GroupResult {
 	shares: Record<string, number>;
 	/** real election: two-party D share and turnout */
 	before: { dem: number; turnout: number; voterShare: number };
+	/** the group's real two-party D share if the dimensions combined independently (Basis.additive) */
+	additive: number;
 }
 
 interface Target { m: Uint8Array; t: number; x: number }
@@ -459,11 +501,11 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 		converged,
 		group(f) {
 			const m = membership(labels, f);
-			let v = 0, c = 0, bv = 0, bd = 0, bc = 0;
+			let v = 0, c = 0, bv = 0, bd = 0, bc = 0, ad = 0;
 			const s: Record<string, number> = Object.fromEntries(partyIds.map((id) => [id, 0]));
 			for (let i = 0; i < n; i++) {
 				if (!m[i]) continue;
-				v += cellV[i]; c += cellC[i]; bv += baseV[i]; bd += baseD[i]; bc += baseC[i];
+				v += cellV[i]; c += cellC[i]; bv += baseV[i]; bd += baseD[i]; bc += baseC[i]; ad += baseV[i] * b.additive[i];
 				for (const id of partyIds) s[id] += cellParty[id][i];
 			}
 			if (v > 0) for (const id of partyIds) s[id] /= v;
@@ -471,7 +513,8 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 				voterShare: allV ? v / allV : 0,
 				turnout: c ? v / c : 0,
 				shares: s,
-				before: { dem: bv ? bd / bv : 0, turnout: bc ? bv / bc : 0, voterShare: allBase ? bv / allBase : 0 }
+				before: { dem: bv ? bd / bv : 0, turnout: bc ? bv / bc : 0, voterShare: allBase ? bv / allBase : 0 },
+				additive: bv ? ad / bv : 0
 			};
 		}
 	};
