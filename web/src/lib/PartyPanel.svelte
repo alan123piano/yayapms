@@ -122,7 +122,10 @@
 		<button type="button" onclick={add} disabled={parties.length >= MAX_PARTIES}>+ Add party</button>
 		<button type="button" onclick={loadPreset}>Load example scenario</button>
 	</div>
-{#if totalShare > 80}<p class="warn small">National shares add up to {totalShare}%: the big two are nearly gone.</p>{/if}
+{#if extras.length}
+	<!-- reserved space: dragging a share slider past the threshold must not shift the panel -->
+	<p class="warn small" class:hidden={totalShare <= 80} aria-hidden={totalShare <= 80}>National shares add up to {totalShare}%: the big two are nearly gone.</p>
+{/if}
 {#if extras.length}
 	<p class="muted small">
 		Each new party wins the same fraction of its source party's voters everywhere it runs (UK-style
@@ -183,5 +186,8 @@
 	}
 	.warn {
 		color: var(--danger);
+	}
+	.hidden {
+		visibility: hidden;
 	}
 </style>

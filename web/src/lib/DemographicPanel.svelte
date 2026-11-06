@@ -126,9 +126,8 @@
 		applies to a voter stacks (e.g. Age 18-29 and Gender Men both apply to young men).
 	</p>
 {/if}
-{#if isActive(swing)}
-	<button type="button" class="link" onclick={() => (swing = { segments: swing.segments.filter((g) => g.custom).map((g) => ({ ...g, vote: 0, turnout: 0 })) })}>reset all voter groups</button>
-{/if}
+<!-- always laid out (disabled when idle) so it never pops in under a slider being dragged -->
+<button type="button" class="link" disabled={!isActive(swing)} onclick={() => (swing = { segments: swing.segments.filter((g) => g.custom).map((g) => ({ ...g, vote: 0, turnout: 0 })) })}>reset all voter groups</button>
 
 <style>
 	.tabs {
