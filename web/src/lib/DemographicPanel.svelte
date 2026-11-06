@@ -3,7 +3,7 @@
 	import { describe, isActive, MAX_CUSTOM_SEGMENTS, type DemoSwing, type Filter, type Segment } from './demographics';
 	import { swingLabel } from './format';
 	import Scrubber, { stepped } from './Scrubber.svelte';
-	import type { Simulation } from './model';
+	import { twoPartyD, type Simulation } from './model';
 	import type { CellData } from './types';
 
 	interface Props {
@@ -35,8 +35,7 @@
 	let stats = $derived(
 		rows.map((r): GroupStat => {
 			const g = sim.group(r.filter);
-			const dr = (g.shares.D ?? 0) + (g.shares.R ?? 0);
-			return { voterShare: g.voterShare, demBefore: g.before.dem, demAfter: dr ? g.shares.D / dr : 0, turnoutAfter: g.turnout };
+			return { voterShare: g.voterShare, demBefore: twoPartyD(g.before.shares), demAfter: twoPartyD(g.shares), turnoutAfter: g.turnout };
 		})
 	);
 	let customCount = $derived(swing.segments.filter((g) => g.custom).length);

@@ -55,9 +55,9 @@ try {
 				const rb = basis.regions.get(r.id);
 				let fd = 0;
 				for (let i = 0; i < n; i++) {
-					const p = 1 / (1 + Math.exp(-(basis.alpha[i] + rb.rho)));
+					const p = 1 / (1 + Math.exp(-(basis.alpha[0][i] + rb.rho[0])));
 					fd += rb.V[i] * p;
-					natV[i] += rb.V[i]; natD[i] += rb.D[i]; fitD[i] += rb.V[i] * p;
+					natV[i] += rb.V[i]; natD[i] += rb.P[0][i]; fitD[i] += rb.V[i] * p;
 				}
 				near(fd / V, r.demShare, 1e-8, `${r.id}: basis reproduces the district`);
 			}
@@ -77,7 +77,7 @@ try {
 			const t0s = S.tally(rs, ctx0);
 			if (eid === 'pres-2020') assert.equal(t0s.seats.D, expect2020[id], '2020 D seats unchanged');
 			const g0 = ctx0.sim.group({ age: ['18-29'] });
-			near(g0.shares.D, g0.before.dem, 1e-6, 'matrix = real data with no edits');
+			near(g0.shares.D, g0.before.shares.D, 1e-6, 'matrix = real data with no edits');
 
 			// 3. multiparty preset: shares sum to 1, targets hit, draws hit, regional stays regional
 			const parties = P.presetParties(core);
@@ -130,6 +130,9 @@ try {
 			for (const g of ['30-44', '45-64', '65+']) near(cs.sim.group({ age: [g] }).shares.D, ctx0.sim.group({ age: [g] }).shares.D, 1e-12, `${g} untouched by youth swing`);
 			const dy = (cs.sim.group({ age: ['18-29'] }).shares.D - g0.shares.D) * 200;
 			assert.ok(dy > 7 && dy < 10.5, `youth +10 moves young voters ~10 margin points (${dy.toFixed(2)})`);
+			const tiny = ctxOf(basis, rs, core, 0, [seg({ age: ['18-29'] }, 0.5)]);
+			const dt = (tiny.sim.group({ age: ['18-29'] }).shares.D - g0.shares.D) * 200;
+			assert.ok(dt > 0 && dt < 0.6, `a 0.5-point swing moves young voters < 0.6 pts, no jump (${dt.toFixed(3)})`);
 			const ct = ctxOf(basis, rs, core, 0, [seg({ age: ['18-29'] }, 0, 20)]);
 			const r0 = rs[0], rb0 = basis.regions.get(r0.id);
 			let V = 0, Y = 0;
@@ -139,13 +142,13 @@ try {
 			// main effects only: reproduces every single group's real share (that's what it is fitted to)
 			for (const [d, gs] of Object.entries(cells.dims)) for (const g of gs) {
 				const x = ctx0.sim.group({ [d]: [g] });
-				near(x.additive, x.before.dem, 1e-6, `main effects reproduce ${g}`);
+				for (const q of ['D', 'R']) near(x.additive[q], x.before.shares[q], 1e-6, `main effects reproduce ${q} among ${g}`);
 			}
 
 			// demographics-only baseline: each cell at its national rate; national group shares unchanged
 			const demo = M.demographicsOnly(basis);
 			const cdemo = ctxOf(demo, rs, core);
-			for (const r of rs) near(S.shares(r, cdemo).D, basis.regions.get(r.id).expected, 1e-9, `${r.id}: demographics-only district`);
+			for (const r of rs) near(S.shares(r, cdemo).D, basis.regions.get(r.id).expected.D, 1e-9, `${r.id}: demographics-only district`);
 			for (const f of [{}, { race: ['Black'] }, { age: ['18-29'], sex: ['Men'] }, { edu: ['College'] }]) {
 				near(cdemo.sim.group(f).shares.D, ctx0.sim.group(f).shares.D, 1e-6, `demographics-only keeps national share of ${JSON.stringify(f)}`);
 			}
@@ -162,6 +165,46 @@ try {
 			assert.equal(S.outcome(r0, ctxOf(basis, rs, core, 0, [], { [r0.id]: { p: 'p2', l: 4 } })).manual, false);
 			assert.equal(S.outcome(r0, ctxOf(basis, rs, parties, 0, [], { [r0.id]: { p: 'p2', l: 4 } })).winner, 'p2');
 		}
+	}
+
+	// three baseline parties: the fit is the same for every party (synthetic "L" party taken out
+	// of R's cell votes, stronger among the young)
+	{
+		const map = load('us-house-current', 'pres-2024');
+		const el = map.elections.find((e) => e.id === 'pres-2024');
+		const n = 80;
+		const labels = G.cellLabels(el.cells);
+		const lRate = labels.map((l) => (l.age === '18-29' ? 0.3 : 0.08));
+		const results = {}, base = {};
+		for (const r of map.regions) {
+			const c = r.cells;
+			const L = labels.map((_, i) => (c[n + i] - c[2 * n + i]) * lRate[i]);
+			results[r.id] = [...c.slice(0, 3 * n), ...L];
+			const Ltot = L.reduce((a, b) => a + b, 0), D = r.demShare * r.votes;
+			base[r.id] = { D, L: Ltot, R: r.votes - D - Ltot };
+		}
+		const cells3 = { ...el.cells, parties: ['D', 'L', 'R'], results };
+		const regions = map.regions.map((r) => ({ ...r, cells: results[r.id], baseline: base[r.id] }));
+		const b3 = M.fitBasis(regions, cells3);
+		assert.deepEqual(b3.parties, ['D', 'L', 'R']);
+		const sim3 = M.simulate(b3, regions, { swing: 0, segments: [], parties: core });
+		for (const r of regions) {
+			const sh = sim3.shares.get(r.id);
+			for (const q of ['D', 'L', 'R']) near(sh[q], base[r.id][q] / r.votes, 1e-7, `${r.id}: 3-party district ${q}`);
+		}
+		for (const f of [{ age: ['18-29'] }, { race: ['Black'] }, { age: ['65+'], edu: ['College'] }]) {
+			const g = sim3.group(f);
+			for (const q of ['D', 'L', 'R']) near(g.shares[q], g.before.shares[q], 1e-6, `3-party national ${q} among ${JSON.stringify(f)}`);
+		}
+		const y = sim3.group({ age: ['18-29'] });
+		for (const q of ['D', 'L', 'R']) near(y.additive[q], y.before.shares[q], 1e-6, `3-party main effects ${q}`);
+		// appeals and extras work against any baseline party
+		const rApp = core.map((p) => (p.id === 'R' ? { ...p, appeals: [{ filter: { sex: ['Men'] }, share: 50 }] } : p));
+		const s3 = M.simulate(b3, regions, { swing: 2, segments: [], parties: [...rApp, party({ share: 5, fromD: 40 })] });
+		assert.ok(s3.converged, '3-party scenario converges');
+		near(s3.group({ sex: ['Men'] }).shares.R, 0.5, 1e-5, '3-party: R wins 50% of men');
+		near(s3.group({}).shares.p1, 0.05, 1e-5, '3-party: extra party 5%');
+		console.log('three-party baseline OK');
 	}
 
 	// maps without demographic data: one "everyone" cell, same code path

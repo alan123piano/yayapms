@@ -108,7 +108,8 @@ export function withElection(m: LoadedMap, electionId: string | undefined): Load
 			const v = el?.results[r.id];
 			const d = Number(v?.D), rep = Number(v?.R);
 			const ok = Number.isFinite(d) && Number.isFinite(rep) && d >= 0 && rep >= 0 && d + rep > 0;
-			return { ...r, demShare: ok ? d / (d + rep) : null, votes: ok ? d + rep : 0, cells: ok ? el?.cells?.results[r.id] : undefined };
+			const baseline = ok ? Object.fromEntries((el?.cells?.parties ?? ['D', 'R']).map((p) => [p, Math.max(0, Number(v?.[p]) || 0)])) : undefined;
+			return { ...r, demShare: ok ? d / (d + rep) : null, votes: ok ? d + rep : 0, cells: ok ? el?.cells?.results[r.id] : undefined, baseline };
 		})
 	};
 }

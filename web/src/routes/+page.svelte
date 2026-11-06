@@ -21,7 +21,7 @@
 	} from '#lib/config.ts';
 	import { describe, emptySwing, filterKey, isActive, sanitizeSwing, type GroupOption } from '#lib/demographics.ts';
 	import { loadPack, withElection } from '#lib/loader.ts';
-	import { demographicsOnly, fitBasis, residualPoints, type Basis, type Scenario } from '#lib/model.ts';
+	import { demographicsOnly, fitBasis, residualPoints, twoPartyD, type Basis, type Scenario } from '#lib/model.ts';
 	import { coreParties, sanitizeParties } from '#lib/parties.ts';
 	import { outcomeFill, residualFill } from '#lib/shading.ts';
 	import { buildContext, outcome, tally } from '#lib/sim.ts';
@@ -74,7 +74,7 @@
 				const b = bases[id];
 				return [id, { ...m, regions: m.regions.map((r) => {
 					const rb = b.regions.get(r.id);
-					return rb ? { ...r, demShare: rb.actual } : r;
+					return rb ? { ...r, demShare: twoPartyD(rb.actual) } : r;
 				}) }];
 			})
 		) as Record<string, LoadedMap>

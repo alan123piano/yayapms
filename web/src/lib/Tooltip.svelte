@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { fmtMargin } from './format';
 	import { ratingText } from './shading';
-	import { residualPoints, type RegionBasis } from './model';
+	import { residualPoints, twoPartyD, type RegionBasis } from './model';
 	import { margin } from './sim';
 	import type { Outcome, Party, Region } from './types';
 
@@ -41,7 +41,7 @@
 	{#if r.seats !== 1}<div>{r.seats} seats</div>{/if}
 	{#if hasCells && residual}
 		<div class="muted small">
-			Demographics predict {fmtMargin(margin(residual.expected, 0))}; district effect {fmtMargin(residualPoints(residual))}
+			Demographics predict {fmtMargin(margin(twoPartyD(residual.expected), 0))}; district effect {fmtMargin(residualPoints(residual))}
 		</div>
 	{/if}
 </div>

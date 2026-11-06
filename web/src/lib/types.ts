@@ -42,7 +42,9 @@ export interface ElectionRef {
 export interface CellData {
 	dims: Record<string, string[]>;
 	order: string[];
-	/** per region: [cvap x N, voters x N, dem votes x N] for N cells */
+	/** the election's parties (default D, R): the last one is "everyone else" in `results` */
+	parties?: string[];
+	/** per region: [cvap x N, voters x N, then votes x N for each party but the last] for N cells */
 	results: Record<string, number[]>;
 }
 
@@ -62,6 +64,8 @@ export interface Region {
 	votes: number;
 	/** demographic cells for the selected election, if available */
 	cells?: number[];
+	/** votes per party of the selected election that the vote model starts from (CellData.parties) */
+	baseline?: Record<string, number>;
 	feature: Feature<Geometry>;
 }
 

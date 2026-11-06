@@ -3,26 +3,29 @@ import type { CellData, Party, Region } from './types';
 
 /*
  * The vote model. Every region's electorate is split into demographic cells c (age x race x
- * edu x sex; a single "everyone" cell when an election has no demographic data).
+ * edu x sex; a single "everyone" cell when an election has no demographic data). Every party
+ * in the baseline election is modeled the same way.
  *
- * 1. Basis (fitted once per map + election): the D-vs-R lean of cell c in district d is
- *        P(D | c, d) = σ(α_c + ρ_d)
- *    α_c is a NATIONAL matrix (how each cell votes), ρ_d a per-district residual (how much
- *    more D or R the district is than its demographics). Both are fitted together so the real
- *    district results and the national per-cell totals are reproduced exactly: this is the
- *    maximum-likelihood fit of a logit with cell and district fixed effects.
+ * 1. Basis (fitted once per map + election): a multinomial logit. Party k's share of cell c in
+ *    district d is
+ *        P(k | c, d) = softmax_k(α_k,c + ρ_k,d)
+ *    α_k is a NATIONAL matrix (how each cell votes for party k), ρ_k,d a per-district
+ *    residual (how much more the district backs k than its demographics). One party is the
+ *    reference (α = ρ = 0) only to pin down the scale; nothing else treats it differently.
+ *    Fitted jointly so the real district results and the national per-cell totals are
+ *    reproduced exactly (maximum likelihood with cell and district fixed effects per party).
  *
  * 2. Scenario (re-run on every change):
- *    a. Voter-group edits move the national matrix: vote swings shift a cell's national D
- *       share (points), turnout changes scale its voters. Districts follow through the logit,
- *       so a +10 swing among young voters moves an R+40 district's young voters less.
- *    b. Core-party appeals ("D wins 70% of Hispanics") add a logit shift to the cells of that
- *       group, solved so the national result hits the target.
+ *    a. Voter-group edits move the national matrix: vote swings shift a cell's D-vs-R split
+ *       (points), turnout changes scale its voters. Districts follow through the logit, so a
+ *       +10 swing among young voters moves an R+40 district's young voters less.
+ *    b. Appeals by baseline parties ("D wins 70% of Hispanics", "R wins 60% of men") add to
+ *       that party's utility in the group's cells, solved so the national result hits target.
  *    c. The uniform D/R swing moves every district's two-party result by exactly that many
  *       points (shifting each cell in proportion to the voters it has left to give).
- *    d. Extra parties win voters away from each side. A D-side voter in cell c stays with D
- *       or defects to party p with softmax odds exp(η_pD,c), where
- *           η_p,side,c = base_p + Σ appeals_p,g [c in g] ± tilt_p
+ *    d. Extra parties win voters away from each baseline party. A voter of party k in cell c
+ *       stays or defects to party p with softmax odds exp(η_p,k,c), where
+ *           η_p,k,c = base_p + Σ appeals_p,g [c in g] + tilt_p · (+1 for D, −1 for R, else 0)
  *       base_p sets its share among voters outside its target groups, each appeal its share
  *       within a group, tilt_p how many of its voters come from D vs R. All are solved
  *       jointly against national (where-it-runs) totals.
@@ -30,11 +33,12 @@ import type { CellData, Party, Region } from './types';
  */
 
 const LIM = 40;
-const sig = (x: number) => 1 / (1 + Math.exp(-x));
 const logit = (p: number) => {
 	const q = Math.min(1 - 1e-12, Math.max(1e-12, p));
 	return Math.log(q / (1 - q));
 };
+/** log(p / q), the utility of share p against a reference share q */
+const logRatio = (p: number, q: number) => clampLim(Math.log(Math.max(p, 1e-300) / Math.max(q, 1e-300)));
 const clampLim = (x: number) => Math.max(-LIM, Math.min(LIM, x));
 const sum = (a: ArrayLike<number>) => {
 	let s = 0;
@@ -42,167 +46,239 @@ const sum = (a: ArrayLike<number>) => {
 	return s;
 };
 
+/** softmax of utilities u (in place into out) */
+function softmax(u: ArrayLike<number>, out: Float64Array): Float64Array {
+	let m = -Infinity;
+	for (let k = 0; k < u.length; k++) m = Math.max(m, u[k]);
+	let s = 0;
+	for (let k = 0; k < u.length; k++) { out[k] = Math.exp(u[k] - m); s += out[k]; }
+	for (let k = 0; k < u.length; k++) out[k] /= s;
+	return out;
+}
+
 // ---------- 1. basis ----------
 
 export interface RegionBasis {
 	id: string;
 	group: string;
-	/** per cell: voters, real Dem votes, citizen voting-age pop (null if unknown) */
+	/** per cell: voters, citizen voting-age pop (null if unknown) */
 	V: Float64Array;
-	D: Float64Array;
 	C: Float64Array | null;
-	/** district residual (logit units, vote-weighted mean 0 across the map) */
-	rho: number;
-	/** real two-party D share */
-	actual: number;
-	/** D share if every cell voted at its national rate (demographics alone) */
-	expected: number;
+	/** per baseline party (Basis.parties order), per cell: real votes */
+	P: Float64Array[];
+	/** per baseline party: district residual (log-odds vs the reference party, vote-weighted mean 0) */
+	rho: Float64Array;
+	/** per baseline party: real share, and the share if every cell voted at its national rate */
+	actual: Record<string, number>;
+	expected: Record<string, number>;
 }
 
 export interface Basis {
 	n: number;
 	labels: Record<string, string>[];
-	/** national D-vs-R logit per cell (fitted jointly with the residuals) */
-	alpha: Float64Array;
-	/** each cell's national two-party D rate */
-	rate: Float64Array;
-	/** the same rates if the dimensions combined independently: a main-effects-only logit
-	 *  fitted to every single group's national total (no interactions) */
-	additive: Float64Array;
+	/** the baseline election's parties; the last is the reference */
+	parties: string[];
+	/** per party, per cell: national utility (fitted jointly with the residuals) */
+	alpha: Float64Array[];
+	/** per party, per cell: national vote rate */
+	rate: Float64Array[];
+	/** per party, per cell: the rates if the dimensions combined independently (a main-effects
+	 *  multinomial logit fitted to every single group's national total, no interactions) */
+	additive: Float64Array[];
 	regions: Map<string, RegionBasis>;
 }
+
+/** Baseline parties of an election with demographic cells (older files: D, then R). */
+export const cellParties = (cells?: CellData) => cells?.parties ?? ['D', 'R'];
+
+/** Two-party D share of a per-party record. */
+export const twoPartyD = (x: Record<string, number>) => (x.D + x.R > 0 ? x.D / (x.D + x.R) : 0);
 
 export function fitBasis(regions: Region[], cells?: CellData): Basis {
 	const labels = cells ? cellLabels(cells) : [{}];
 	const n = labels.length;
-	const rated = regions.filter((r) => r.demShare !== null && r.votes > 0);
+	const parties = cellParties(cells);
+	const K = parties.length;
+	const ref = K - 1;
+	const rated = regions.filter((r) => r.demShare !== null && r.votes > 0 && r.baseline);
+	/** a region's real votes per party */
+	const official = (r: Region) => parties.map((p) => r.baseline![p] ?? 0);
 
-	// regions without cell data borrow the national composition
-	const compV = new Float64Array(n), compD = new Float64Array(n);
+	// cell data: [cvap x n, voters x n, votes of parties[0..K-2] x n each]; the last party is
+	// the rest. Regions without cell data borrow the national composition.
+	const cellVotes = (r: Region) => {
+		const c = r.cells!;
+		const V = Float64Array.from(c.slice(n, 2 * n));
+		const P = parties.map((_, k) => (k < ref ? Float64Array.from(c.slice((2 + k) * n, (3 + k) * n)) : new Float64Array(n)));
+		for (let i = 0; i < n; i++) {
+			let s = 0;
+			for (let k = 0; k < ref; k++) s += P[k][i];
+			P[ref][i] = Math.max(0, V[i] - s);
+		}
+		return { C: Float64Array.from(c.slice(0, n)), V, P };
+	};
+	const compV = new Float64Array(n);
+	const compP = parties.map(() => new Float64Array(n));
 	for (const r of rated) {
 		if (!cells || !r.cells) continue;
-		for (let i = 0; i < n; i++) { compV[i] += r.cells[n + i]; compD[i] += r.cells[2 * n + i]; }
+		const { V, P } = cellVotes(r);
+		for (let i = 0; i < n; i++) { compV[i] += V[i]; for (let k = 0; k < K; k++) compP[k][i] += P[k][i]; }
 	}
 	const compTot = sum(compV);
 
 	const rows: RegionBasis[] = rated.map((r) => {
-		let V: Float64Array, D: Float64Array, C: Float64Array | null = null;
+		const off = official(r);
+		const tot = sum(off);
+		const actual = Object.fromEntries(parties.map((p, k) => [p, off[k] / tot]));
+		let V: Float64Array, P: Float64Array[], C: Float64Array | null = null;
 		if (cells && r.cells) {
-			C = Float64Array.from(r.cells.slice(0, n));
-			V = Float64Array.from(r.cells.slice(n, 2 * n));
-			D = Float64Array.from(r.cells.slice(2 * n, 3 * n));
+			({ C, V, P } = cellVotes(r));
 		} else if (cells && compTot > 0) {
-			V = compV.map((v) => (v / compTot) * r.votes);
-			const exp = sum(V.map((v, i) => (compV[i] ? (v * compD[i]) / compV[i] : 0)));
-			const k = exp > 0 ? (r.demShare! * r.votes) / exp : 0;
-			D = V.map((v, i) => (compV[i] ? Math.min(v, (k * v * compD[i]) / compV[i]) : 0));
+			V = compV.map((v) => (v / compTot) * tot);
+			P = parties.map((_, k) => V.map((v, i) => (compV[i] ? (v * compP[k][i]) / compV[i] : 0)));
 		} else {
-			V = Float64Array.of(r.votes);
-			D = Float64Array.of(r.demShare! * r.votes);
+			V = Float64Array.of(tot);
+			P = off.map((x) => Float64Array.of(x));
 		}
-		return { id: r.id, group: r.group, V, D, C, rho: 0, actual: r.demShare!, expected: r.demShare! };
+		return { id: r.id, group: r.group, V, C, P, rho: new Float64Array(K), actual, expected: { ...actual } };
 	});
 
-	const alpha = new Float64Array(n);
-	const T = new Float64Array(n), Vc = new Float64Array(n);
-	for (const r of rows) for (let i = 0; i < n; i++) { T[i] += r.D[i]; Vc[i] += r.V[i]; }
 	const tot = rows.map((r) => sum(r.V));
-	// the cell data's Dem total differs from the official results by rounding (≤ ~50 votes a
-	// district): rescale the cell targets so both sets of constraints can hold exactly
-	const kT = rows.reduce((a, r, j) => a + r.actual * tot[j], 0) / (sum(T) || 1);
-	for (let i = 0; i < n; i++) T[i] = Math.min(Vc[i], T[i] * kT);
-	const rate = Float64Array.from(T, (t, i) => (Vc[i] > 0 ? t / Vc[i] : 0));
-	for (let i = 0; i < n; i++) alpha[i] = Vc[i] > 0 ? logit(rate[i]) : 0;
+	const Vc = new Float64Array(n);
+	for (const r of rows) for (let i = 0; i < n; i++) Vc[i] += r.V[i];
+	// national per-cell targets. The cell data's totals differ from the official results by
+	// rounding (≤ ~50 votes a district): rescale each party's cell targets so both sets of
+	// constraints can hold exactly. The reference party is the rest of each cell's voters.
+	const T = parties.map((p, k) => {
+		const t = new Float64Array(n);
+		if (k === ref) return t;
+		for (const r of rows) for (let i = 0; i < n; i++) t[i] += r.P[k][i];
+		const want = rows.reduce((a, r, j) => a + r.actual[p] * tot[j], 0);
+		const kT = want / (sum(t) || 1);
+		return t.map((x) => x * kT);
+	});
+	for (let i = 0; i < n; i++) {
+		let s = 0;
+		for (let k = 0; k < ref; k++) s += T[k][i];
+		T[ref][i] = Math.max(0, Vc[i] - s);
+	}
+	const rate = T.map((t) => Float64Array.from(t, (x, i) => (Vc[i] > 0 ? x / Vc[i] : 0)));
+	const alpha = parties.map((_, k) => Float64Array.from(rate[k], (p, i) => logRatio(p, rate[ref][i])));
 
-	for (let sweep = 0; sweep < 1000; sweep++) {
-		// districts: Σ_c V σ(α + ρ) = actual · ΣV
+	const u = new Float64Array(K), pr = new Float64Array(K);
+	const probs = (r: RegionBasis, i: number) => {
+		for (let k = 0; k < K; k++) u[k] = alpha[k][i] + r.rho[k];
+		return softmax(u, pr);
+	};
+	for (let sweep = 0; sweep < 1000 && K > 1; sweep++) {
 		let worst = 0;
-		rows.forEach((r, k) => {
-			const target = r.actual * tot[k];
-			for (let step = 0; step < 2; step++) {
-				let f = -target, df = 0;
-				for (let i = 0; i < n; i++) {
-					if (!r.V[i]) continue;
-					const p = sig(alpha[i] + r.rho);
-					f += r.V[i] * p;
-					df += r.V[i] * p * (1 - p);
+		// districts: Σ_c V P(k) = real votes of k
+		rows.forEach((r, j) => {
+			for (let k = 0; k < ref; k++) {
+				const target = r.actual[parties[k]] * tot[j];
+				for (let step = 0; step < 2; step++) {
+					let f = -target, df = 0;
+					for (let i = 0; i < n; i++) {
+						if (!r.V[i]) continue;
+						const p = probs(r, i)[k];
+						f += r.V[i] * p;
+						df += r.V[i] * p * (1 - p);
+					}
+					if (step === 0) worst = Math.max(worst, Math.abs(f) / tot[j]);
+					if (df < 1e-12) break;
+					r.rho[k] = clampLim(r.rho[k] - f / df);
 				}
-				if (step === 0) worst = Math.max(worst, Math.abs(f) / tot[k]);
-				if (df < 1e-12) break;
-				r.rho = clampLim(r.rho - f / df);
 			}
 		});
-		// cells: Σ_d V σ(α + ρ) = national Dem votes in the cell
-		let worstCell = 0;
+		// cells: Σ_d V P(k) = national votes of k in the cell
 		for (let i = 0; i < n; i++) {
-			if (!(Vc[i] > 0) || T[i] <= 0 || T[i] >= Vc[i]) {
-				alpha[i] = Vc[i] > 0 ? (T[i] <= 0 ? -LIM : T[i] >= Vc[i] ? LIM : 0) : 0;
-				continue;
-			}
-			for (let step = 0; step < 2; step++) {
-				let f = -T[i], df = 0;
-				for (const r of rows) {
-					if (!r.V[i]) continue;
-					const p = sig(alpha[i] + r.rho);
-					f += r.V[i] * p;
-					df += r.V[i] * p * (1 - p);
-				}
-				if (step === 0) worstCell = Math.max(worstCell, Math.abs(f) / Vc[i]);
-				if (df < 1e-12) break;
-				alpha[i] = clampLim(alpha[i] - f / df);
-			}
-		}
-		if (worst < 1e-10 && worstCell < 1e-10) break;
-	}
-
-	// α + k, ρ - k fit equally well: center ρ (vote-weighted) so it reads as "vs. the nation"
-	const W = sum(tot);
-	const k = W ? rows.reduce((a, r, j) => a + r.rho * tot[j], 0) / W : 0;
-	for (const r of rows) r.rho -= k;
-	for (let i = 0; i < n; i++) alpha[i] += k;
-	rows.forEach((r, j) => {
-		let e = 0;
-		for (let i = 0; i < n; i++) e += r.V[i] * rate[i];
-		r.expected = tot[j] ? e / tot[j] : r.actual;
-	});
-	return { n, labels, alpha, rate, additive: mainEffects(labels, Vc, T), regions: new Map(rows.map((r) => [r.id, r])) };
-}
-
-/**
- * Main-effects-only fit: logit P(D | cell) = Σ_dim β_dim,group, solved so every single group's
- * national D total matches (the maximum-likelihood fit, by raking in logit space).
- */
-function mainEffects(labels: Record<string, string>[], V: Float64Array, T: Float64Array): Float64Array {
-	const n = labels.length;
-	const dims = Object.keys(labels[0] ?? {});
-	const beta = new Map<string, number>();
-	const key = (d: string, i: number) => `${d}=${labels[i][d]}`;
-	const eta = (i: number) => dims.reduce((a, d) => a + (beta.get(key(d, i)) ?? 0), 0);
-	const total = sum(T) / (sum(V) || 1);
-	if (!dims.length) return Float64Array.from(V, () => total);
-	for (let sweep = 0; sweep < 200; sweep++) {
-		let worst = 0;
-		for (const d of dims) {
-			for (const g of new Set(labels.map((l) => l[d]))) {
-				const k = `${d}=${g}`;
+			if (!(Vc[i] > 0)) continue;
+			for (let k = 0; k < ref; k++) {
+				if (rate[k][i] <= 0 || rate[ref][i] <= 0) continue; // fixed at its boundary
 				for (let step = 0; step < 2; step++) {
-					let f = 0, df = 0, vg = 0;
-					for (let i = 0; i < n; i++) {
-						if (labels[i][d] !== g || !V[i]) continue;
-						const p = sig(eta(i));
-						f += V[i] * p - T[i];
-						df += V[i] * p * (1 - p);
-						vg += V[i];
+					let f = -T[k][i], df = 0;
+					for (const r of rows) {
+						if (!r.V[i]) continue;
+						const p = probs(r, i)[k];
+						f += r.V[i] * p;
+						df += r.V[i] * p * (1 - p);
 					}
-					if (!vg || df < 1e-12) break;
-					if (step === 0) worst = Math.max(worst, Math.abs(f) / vg);
-					beta.set(k, clampLim((beta.get(k) ?? 0) - f / df));
+					if (step === 0) worst = Math.max(worst, Math.abs(f) / Vc[i]);
+					if (df < 1e-12) break;
+					alpha[k][i] = clampLim(alpha[k][i] - f / df);
 				}
 			}
 		}
 		if (worst < 1e-10) break;
 	}
-	return Float64Array.from(labels, (_, i) => sig(eta(i)));
+
+	// α + c, ρ - c fit equally well: center each party's ρ (vote-weighted) so it reads "vs. the nation"
+	const W = sum(tot);
+	for (let k = 0; k < ref; k++) {
+		const c = W ? rows.reduce((a, r, j) => a + r.rho[k] * tot[j], 0) / W : 0;
+		for (const r of rows) r.rho[k] -= c;
+		for (let i = 0; i < n; i++) alpha[k][i] += c;
+	}
+	rows.forEach((r, j) => {
+		parties.forEach((p, k) => {
+			let e = 0;
+			for (let i = 0; i < n; i++) e += r.V[i] * rate[k][i];
+			r.expected[p] = tot[j] ? e / tot[j] : r.actual[p];
+		});
+	});
+	return { n, labels, parties, alpha, rate, additive: mainEffects(labels, Vc, T), regions: new Map(rows.map((r) => [r.id, r])) };
+}
+
+/**
+ * Main-effects-only fit: party k's utility in a cell = Σ_dim β_k,dim,group (reference party 0),
+ * solved so every single group's national votes for every party match (the maximum-likelihood
+ * multinomial fit, by raking in logit space).
+ */
+function mainEffects(labels: Record<string, string>[], V: Float64Array, T: Float64Array[]): Float64Array[] {
+	const n = labels.length;
+	const K = T.length;
+	const ref = K - 1;
+	const dims = Object.keys(labels[0] ?? {});
+	const groups = dims.flatMap((d) => [...new Set(labels.map((l) => l[d]))].map((g) => ({ d, g, key: `${d}=${g}` })));
+	const beta = T.map(() => new Map<string, number>());
+	const u = new Float64Array(K), pr = new Float64Array(K);
+	const probs = (i: number) => {
+		for (let k = 0; k < K; k++) u[k] = dims.reduce((a, d) => a + (beta[k].get(`${d}=${labels[i][d]}`) ?? 0), 0);
+		return softmax(u, pr);
+	};
+	if (dims.length) {
+		for (let sweep = 0; sweep < 300; sweep++) {
+			let worst = 0;
+			for (const { d, g, key } of groups) {
+				for (let k = 0; k < ref; k++) {
+					for (let step = 0; step < 2; step++) {
+						let f = 0, df = 0, vg = 0;
+						for (let i = 0; i < n; i++) {
+							if (labels[i][d] !== g || !V[i]) continue;
+							const p = probs(i)[k];
+							f += V[i] * p - T[k][i];
+							df += V[i] * p * (1 - p);
+							vg += V[i];
+						}
+						if (!vg || df < 1e-12) break;
+						if (step === 0) worst = Math.max(worst, Math.abs(f) / vg);
+						beta[k].set(key, clampLim((beta[k].get(key) ?? 0) - f / df));
+					}
+				}
+			}
+			if (worst < 1e-10) break;
+		}
+	} else {
+		// one cell: the national rate
+		const tv = sum(V);
+		return T.map((t) => Float64Array.from(V, () => (tv ? sum(t) / tv : 1 / K)));
+	}
+	const out = T.map(() => new Float64Array(n));
+	for (let i = 0; i < n; i++) {
+		const p = probs(i);
+		for (let k = 0; k < K; k++) out[k][i] = p[k];
+	}
+	return out;
 }
 
 /**
@@ -211,19 +287,25 @@ function mainEffects(labels: Record<string, string>[], V: Float64Array, T: Float
  * differ only by who lives there.
  */
 export function demographicsOnly(b: Basis): Basis {
-	const alpha = Float64Array.from(b.rate, (p) => (p <= 0 ? -LIM : p >= 1 ? LIM : logit(p)));
+	const ref = b.parties.length - 1;
+	const alpha = b.rate.map((rk) => Float64Array.from(rk, (p, i) => logRatio(p, b.rate[ref][i])));
 	const regions = new Map(
 		[...b.regions].map(([id, r]) => [
 			id,
-			{ ...r, rho: 0, actual: r.expected, D: r.V.map((v, i) => v * b.rate[i]) }
+			{
+				...r,
+				rho: new Float64Array(b.parties.length),
+				actual: { ...r.expected },
+				P: b.rate.map((rk) => r.V.map((v, i) => v * rk[i]))
+			}
 		])
 	);
 	return { ...b, alpha, regions };
 }
 
-/** District residual in margin points: real result minus what its demographics predict (+ = more D). */
+/** District residual in D-vs-R margin points: real minus what its demographics predict (+ = more D). */
 export function residualPoints(r: RegionBasis): number {
-	return (r.actual - r.expected) * 200;
+	return ((r.actual.D - r.expected.D) - (r.actual.R - r.expected.R)) * 100;
 }
 
 // ---------- 2. scenario ----------
@@ -236,10 +318,12 @@ export interface Scenario {
 }
 
 export interface Simulation {
+	/** baseline parties, then extra parties on the ballot */
 	partyIds: string[];
+	baselineParties: string[];
 	/** per region: vote share by party id */
 	shares: Map<string, Record<string, number>>;
-	/** per region: two-party D share after voter-group edits and core appeals, before the uniform swing */
+	/** per region: two-party D share after voter-group edits and appeals, before the uniform swing */
 	lean: Map<string, number>;
 	/** per region: number of voters */
 	votes: Map<string, number>;
@@ -253,12 +337,12 @@ export interface GroupResult {
 	/** share of all voters */
 	voterShare: number;
 	turnout: number;
-	/** vote share by party id */
+	/** vote share by party id, now */
 	shares: Record<string, number>;
-	/** real election: two-party D share and turnout */
-	before: { dem: number; turnout: number; voterShare: number };
-	/** the group's real two-party D share if the dimensions combined independently (Basis.additive) */
-	additive: number;
+	/** the baseline election, per baseline party */
+	before: { shares: Record<string, number>; turnout: number; voterShare: number };
+	/** baseline shares if the dimensions combined independently (Basis.additive), per baseline party */
+	additive: Record<string, number>;
 }
 
 interface Target { m: Uint8Array; t: number; x: number }
@@ -281,31 +365,57 @@ const membership = (labels: Record<string, string>[], f: Filter) => Uint8Array.f
 export const isLive = (p: Party) => p.core || p.share > 0 || p.appeals.some((a) => a.share > 0);
 
 export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation {
-	const { n, labels } = b;
+	const { n, labels, parties: base } = b;
+	const K = base.length;
+	const ref = K - 1;
+	const iD = base.indexOf('D'), iR = base.indexOf('R');
+	/** which way the D/R tilt pushes each baseline party's voters */
+	const side = base.map((p) => (p === 'D' ? 1 : p === 'R' ? -1 : 0));
 	const fx = cellEffects(labels, { segments: sc.segments });
-	// a. voter-group vote swings move the national matrix
-	const a0 = Float64Array.from(b.alpha, (a, i) => (fx[i].shift ? logit(sig(a) + fx[i].shift) : a));
 
-	// b. core appeals: one logit shift per (party, group), + toward D
-	const core: (Target & { id: string; sign: number })[] = sc.parties
-		.filter((p) => p.core)
+	// a. voter-group vote swings move the national matrix: points from R to D in the cell,
+	//    applied to the cell's fitted national shares softmax(α) so a zero swing is a no-op
+	const a0 = base.map(() => new Float64Array(n));
+	{
+		const r = new Float64Array(K), au = new Float64Array(K);
+		for (let i = 0; i < n; i++) {
+			for (let k = 0; k < K; k++) au[k] = b.alpha[k][i];
+			softmax(au, r);
+			const shift = fx[i].shift;
+			if (shift && iD >= 0 && iR >= 0) {
+				const pool = r[iD] + r[iR];
+				const d = Math.min(pool, Math.max(0, r[iD] + shift * pool));
+				r[iD] = d;
+				r[iR] = pool - d;
+			}
+			for (let k = 0; k < K; k++) {
+				// unedited cells keep the jointly fitted α exactly
+				a0[k][i] = shift ? logRatio(r[k], r[ref]) : b.alpha[k][i];
+			}
+		}
+	}
+
+	// b. appeals by baseline parties: one utility shift per (party, group)
+	const core: (Target & { k: number; id: string })[] = sc.parties
+		.filter((p) => p.core && base.includes(p.id))
 		.flatMap((p) =>
-			p.appeals.map((a) => ({ id: p.id, sign: p.id === 'R' ? -1 : 1, m: membership(labels, a.filter), t: a.share / 100, x: 0 }))
+			p.appeals.map((a) => ({ id: p.id, k: base.indexOf(p.id), m: membership(labels, a.filter), t: a.share / 100, x: 0 }))
 		);
 	// d. extra parties
 	const extras: Extra[] = sc.parties
-		.filter((p) => !p.core && isLive(p))
+		.filter((p) => !p.core && !base.includes(p.id) && isLive(p))
 		.map((p, j) => {
 			const appeals = p.appeals.map((a) => ({ m: membership(labels, a.filter), t: a.share / 100, x: 0 }));
 			const outside = Uint8Array.from(labels, (_, i) => (appeals.some((a) => a.m[i]) ? 0 : 1));
 			const out = p.share > 0 ? p.share / 100 : appeals.length ? null : 0;
-			const base = out ? logit(out) : -LIM;
-			for (const a of appeals) a.x = logit(Math.max(a.t, 1e-6)) - base;
-			return { id: p.id, bit: 1 << j, runs: p.states.length ? new Set(p.states) : null, out, outside, appeals, fromD: p.fromD / 100, base, tilt: 0 };
+			const baseX = out ? logit(out) : -LIM;
+			for (const a of appeals) a.x = logit(Math.max(a.t, 1e-6)) - baseX;
+			return { id: p.id, bit: 1 << j, runs: p.states.length ? new Set(p.states) : null, out, outside, appeals, fromD: p.fromD / 100, base: baseX, tilt: 0 };
 		});
-	const partyIds = [...sc.parties.filter((p) => p.core).map((p) => p.id), ...extras.map((e) => e.id)];
+	const partyIds = [...base, ...extras.map((e) => e.id)];
+	const E = extras.length;
 
-	interface Row { rb: RegionBasis; Vp: Float64Array; lean: Float64Array; L0: number; mask: number }
+	interface Row { rb: RegionBasis; Vp: Float64Array; S: Float64Array[]; L0: number; mask: number }
 	const rows: Row[] = [];
 	for (const r of regions) {
 		const rb = b.regions.get(r.id);
@@ -317,81 +427,92 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 		});
 		let mask = 0;
 		for (const e of extras) if (!e.runs || e.runs.has(rb.group)) mask |= e.bit;
-		rows.push({ rb, Vp, lean: new Float64Array(n), L0: rb.actual, mask });
+		rows.push({ rb, Vp, S: base.map(() => new Float64Array(n)), L0: twoPartyD(rb.actual), mask });
 	}
 
-	// per signature (set of extras on the ballot): D-side / R-side / all voters per cell
-	type Agg = { mask: number; on: Extra[]; Ld: Float64Array; Lr: Float64Array; V: Float64Array };
+	// per signature (set of extras on the ballot): each baseline party's voters, and all voters, per cell
+	type Agg = { on: number[]; L: Float64Array[]; V: Float64Array };
 	const aggs = new Map<number, Agg>();
 	for (const row of rows) {
 		if (!aggs.has(row.mask)) {
-			aggs.set(row.mask, { mask: row.mask, on: extras.filter((e) => row.mask & e.bit), Ld: new Float64Array(n), Lr: new Float64Array(n), V: new Float64Array(n) });
+			aggs.set(row.mask, { on: extras.flatMap((e, j) => (row.mask & e.bit ? [j] : [])), L: base.map(() => new Float64Array(n)), V: new Float64Array(n) });
 		}
 	}
 
-	function computeLean() {
-		for (const a of aggs.values()) { a.Ld.fill(0); a.Lr.fill(0); a.V.fill(0); }
-		const shiftK = new Float64Array(n);
-		for (const t of core) for (let i = 0; i < n; i++) if (t.m[i]) shiftK[i] += t.sign * t.x;
+	const u = new Float64Array(K), pr = new Float64Array(K);
+	function computeBase() {
+		for (const a of aggs.values()) { for (const l of a.L) l.fill(0); a.V.fill(0); }
+		const shift = base.map(() => new Float64Array(n));
+		for (const t of core) for (let i = 0; i < n; i++) if (t.m[i]) shift[t.k][i] += t.x;
 		for (const row of rows) {
-			const { Vp, lean, rb } = row;
-			let V = 0, L = 0;
+			const { Vp, S, rb } = row;
+			let dv = 0, pool = 0;
 			for (let i = 0; i < n; i++) {
-				lean[i] = sig(a0[i] + shiftK[i] + rb.rho);
-				V += Vp[i];
-				L += Vp[i] * lean[i];
+				for (let k = 0; k < K; k++) u[k] = a0[k][i] + shift[k][i] + rb.rho[k];
+				softmax(u, pr);
+				for (let k = 0; k < K; k++) S[k][i] = pr[k];
+				if (iD >= 0 && iR >= 0) { dv += Vp[i] * pr[iD]; pool += Vp[i] * (pr[iD] + pr[iR]); }
 			}
-			row.L0 = V ? L / V : rb.actual;
-			// c. uniform swing: exactly swing/200 on the district, taken from voters still available
+			// c. uniform swing: exactly swing/200 on the district's two-party D share, taken
+			//    from voters still available
+			row.L0 = pool ? dv / pool : twoPartyD(rb.actual);
 			const L1 = Math.min(1, Math.max(0, row.L0 + sc.swing / 200));
-			if (L1 > row.L0 && row.L0 < 1) {
-				const k = (L1 - row.L0) / (1 - row.L0);
-				for (let i = 0; i < n; i++) lean[i] += (1 - lean[i]) * k;
-			} else if (L1 < row.L0 && row.L0 > 0) {
-				const k = (row.L0 - L1) / row.L0;
-				for (let i = 0; i < n; i++) lean[i] *= 1 - k;
+			if (pool && L1 !== row.L0) {
+				const up = L1 > row.L0;
+				const k = up ? (L1 - row.L0) / (1 - row.L0) : (row.L0 - L1) / row.L0;
+				for (let i = 0; i < n; i++) {
+					const p = S[iD][i] + S[iR][i];
+					if (!p) continue;
+					let l = S[iD][i] / p;
+					l = up ? l + (1 - l) * k : l * (1 - k);
+					S[iD][i] = p * l;
+					S[iR][i] = p * (1 - l);
+				}
 			}
 			const a = aggs.get(row.mask)!;
 			for (let i = 0; i < n; i++) {
-				a.Ld[i] += Vp[i] * lean[i];
-				a.Lr[i] += Vp[i] * (1 - lean[i]);
+				for (let k = 0; k < K; k++) a.L[k][i] += Vp[i] * S[k][i];
 				a.V[i] += Vp[i];
 			}
 		}
 	}
 
-	/** η of extra e in cell i, before the ± tilt */
+	/** η of extra e in cell i, before the tilt */
 	const eta = (e: Extra, i: number) => {
 		let x = e.base;
 		for (const a of e.appeals) if (a.m[i]) x += a.x;
 		return x;
 	};
+	/** defection odds exp(η) of each extra in `on`, for voters of baseline party k in cell i */
+	const odds = (on: number[], i: number, k: number, out: Float64Array) => {
+		let s = 1;
+		for (const j of on) { const e = extras[j]; out[j] = Math.exp(clampLim(eta(e, i) + e.tilt * side[k])); s += out[j]; }
+		return s;
+	};
 
-	/** national votes per cell: core parties, then each extra (+ its D-side part and where-it-runs voters) */
+	/** national votes per cell for every party, the D-side part of each extra, and where-it-runs voters */
 	function totals() {
 		const votes: Record<string, Float64Array> = {};
-		const fromD: Record<string, Float64Array> = {};
-		const runV: Record<string, Float64Array> = {};
-		for (const id of partyIds) { votes[id] = new Float64Array(n); fromD[id] = new Float64Array(n); runV[id] = new Float64Array(n); }
+		for (const id of partyIds) votes[id] = new Float64Array(n);
+		const fromD = extras.map(() => new Float64Array(n));
+		const runV = extras.map(() => new Float64Array(n));
 		const allV = new Float64Array(n);
+		const o = new Float64Array(E);
 		for (const a of aggs.values()) {
 			for (let i = 0; i < n; i++) {
-				let sD = 1, sR = 1;
-				const eD: number[] = [], eR: number[] = [];
-				for (const e of a.on) {
-					const x = eta(e, i);
-					const d = Math.exp(clampLim(x + e.tilt)), r = Math.exp(clampLim(x - e.tilt));
-					eD.push(d); eR.push(r); sD += d; sR += r;
-				}
-				votes.D[i] += a.Ld[i] / sD;
-				votes.R[i] += a.Lr[i] / sR;
 				allV[i] += a.V[i];
-				a.on.forEach((e, k) => {
-					const fd = (a.Ld[i] * eD[k]) / sD;
-					votes[e.id][i] += fd + (a.Lr[i] * eR[k]) / sR;
-					fromD[e.id][i] += fd;
-					runV[e.id][i] += a.V[i];
-				});
+				for (const j of a.on) runV[j][i] += a.V[i];
+				for (let k = 0; k < K; k++) {
+					const L = a.L[k][i];
+					if (!L) continue;
+					const s = odds(a.on, i, k, o);
+					votes[base[k]][i] += L / s;
+					for (const j of a.on) {
+						const v = (L * o[j]) / s;
+						votes[extras[j].id][i] += v;
+						if (k === iD) fromD[j][i] += v;
+					}
+				}
 			}
 		}
 		return { votes, fromD, runV, allV };
@@ -409,32 +530,35 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 	const outer = core.length ? 40 : 1;
 	let prevOuter = Infinity;
 	for (let o = 0; o < outer; o++) {
-		computeLean();
+		computeBase();
 		let prevInner = Infinity;
-		for (let it = 0; it < 200 && extras.length; it++) {
+		for (let it = 0; it < 200 && E; it++) {
 			let worst = 0;
-			for (const e of extras) {
+			extras.forEach((e, j) => {
 				const step = (cur: number, t: number) => {
 					if (!Number.isFinite(cur)) return 0;
 					worst = Math.max(worst, Math.abs(cur - t));
 					return logit(t) - logit(cur);
 				};
 				let T = totals();
-				if (e.out !== null) e.base = clampLim(e.base + step(shareIn(T.votes[e.id], T.runV[e.id], e.outside), e.out));
+				if (e.out !== null) e.base = clampLim(e.base + step(shareIn(T.votes[e.id], T.runV[j], e.outside), e.out));
 				for (const a of e.appeals) {
 					T = totals();
-					a.x = clampLim(a.x + step(shareIn(T.votes[e.id], T.runV[e.id], a.m), a.t));
+					a.x = clampLim(a.x + step(shareIn(T.votes[e.id], T.runV[j], a.m), a.t));
+				}
+				if (iD < 0 || iR < 0) return;
+				if (e.fromD <= 0 || e.fromD >= 1) {
+					e.tilt = e.fromD >= 1 ? LIM / 2 : -LIM / 2;
+					return;
 				}
 				T = totals();
 				const got = sum(T.votes[e.id]);
-				if (got > 0 && e.fromD > 0 && e.fromD < 1) {
-					const cur = sum(T.fromD[e.id]) / got;
+				if (got > 0) {
+					const cur = sum(T.fromD[j]) / got;
 					worst = Math.max(worst, Math.abs(cur - e.fromD));
 					e.tilt = clampLim(e.tilt + 0.5 * (logit(e.fromD) - logit(cur)));
-				} else if (e.fromD <= 0 || e.fromD >= 1) {
-					e.tilt = e.fromD >= 1 ? LIM / 2 : -LIM / 2;
 				}
-			}
+			});
 			if (worst < 1e-7) break;
 			if (worst > prevInner * 0.999 || it === 199) { converged = false; break; }
 			prevInner = worst;
@@ -446,7 +570,7 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 			const cur = shareIn(T.votes[t.id], T.allV, t.m);
 			if (!Number.isFinite(cur)) continue;
 			worst = Math.max(worst, Math.abs(cur - t.t));
-			t.x = clampLim(t.x + t.sign * (logit(t.t) - logit(cur)));
+			t.x = clampLim(t.x + logit(t.t) - logit(cur));
 		}
 		if (worst < 1e-6) break;
 		if (worst > prevOuter * 0.98 || o === outer - 1) { converged = false; break; }
@@ -459,32 +583,33 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 	const votesBy = new Map<string, number>();
 	const cellParty: Record<string, Float64Array> = Object.fromEntries(partyIds.map((id) => [id, new Float64Array(n)]));
 	const cellV = new Float64Array(n), cellC = new Float64Array(n);
-	const baseV = new Float64Array(n), baseD = new Float64Array(n), baseC = new Float64Array(n);
-	const eD = new Float64Array(extras.length), eR = new Float64Array(extras.length);
+	const baseV = new Float64Array(n), baseC = new Float64Array(n);
+	const baseP = base.map(() => new Float64Array(n));
+	const o = new Float64Array(E);
 	for (const row of rows) {
-		const { Vp, lean: ln, rb, mask } = row;
+		const { Vp, S, rb, mask } = row;
+		const on = extras.flatMap((e, j) => (mask & e.bit ? [j] : []));
 		const acc: Record<string, number> = Object.fromEntries(partyIds.map((id) => [id, 0]));
 		let V = 0;
 		for (let i = 0; i < n; i++) {
+			baseV[i] += rb.V[i];
+			for (let k = 0; k < K; k++) baseP[k][i] += rb.P[k][i];
+			if (rb.C) { cellC[i] += rb.C[i]; baseC[i] += rb.C[i]; }
 			if (!Vp[i]) continue;
-			let sD = 1, sR = 1;
-			extras.forEach((e, k) => {
-				if (!(mask & e.bit)) { eD[k] = eR[k] = 0; return; }
-				const x = eta(e, i);
-				eD[k] = Math.exp(clampLim(x + e.tilt));
-				eR[k] = Math.exp(clampLim(x - e.tilt));
-				sD += eD[k]; sR += eR[k];
-			});
-			const d = Vp[i] * ln[i], r = Vp[i] * (1 - ln[i]);
-			const add = (id: string, v: number) => { acc[id] += v; cellParty[id][i] += v; };
-			add('D', d / sD);
-			add('R', r / sR);
-			extras.forEach((e, k) => { if (mask & e.bit) add(e.id, (d * eD[k]) / sD + (r * eR[k]) / sR); });
+			for (let k = 0; k < K; k++) {
+				const L = Vp[i] * S[k][i];
+				if (!L) continue;
+				const s = odds(on, i, k, o);
+				acc[base[k]] += L / s;
+				cellParty[base[k]][i] += L / s;
+				for (const j of on) {
+					const v = (L * o[j]) / s;
+					acc[extras[j].id] += v;
+					cellParty[extras[j].id][i] += v;
+				}
+			}
 			V += Vp[i];
 			cellV[i] += Vp[i];
-			baseV[i] += rb.V[i];
-			baseD[i] += rb.D[i];
-			if (rb.C) { cellC[i] += rb.C[i]; baseC[i] += rb.C[i]; }
 		}
 		if (V > 0) for (const id of partyIds) acc[id] /= V;
 		shares.set(rb.id, acc);
@@ -495,26 +620,31 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 	const allV = sum(cellV), allBase = sum(baseV);
 	return {
 		partyIds,
+		baselineParties: base,
 		shares,
 		lean,
 		votes: votesBy,
 		converged,
 		group(f) {
 			const m = membership(labels, f);
-			let v = 0, c = 0, bv = 0, bd = 0, bc = 0, ad = 0;
+			let v = 0, c = 0, bv = 0, bc = 0;
 			const s: Record<string, number> = Object.fromEntries(partyIds.map((id) => [id, 0]));
+			const bs: Record<string, number> = Object.fromEntries(base.map((id) => [id, 0]));
+			const ad: Record<string, number> = Object.fromEntries(base.map((id) => [id, 0]));
 			for (let i = 0; i < n; i++) {
 				if (!m[i]) continue;
-				v += cellV[i]; c += cellC[i]; bv += baseV[i]; bd += baseD[i]; bc += baseC[i]; ad += baseV[i] * b.additive[i];
+				v += cellV[i]; c += cellC[i]; bv += baseV[i]; bc += baseC[i];
 				for (const id of partyIds) s[id] += cellParty[id][i];
+				base.forEach((id, k) => { bs[id] += baseP[k][i]; ad[id] += baseV[i] * b.additive[k][i]; });
 			}
-			if (v > 0) for (const id of partyIds) s[id] /= v;
+			for (const id of partyIds) s[id] = v > 0 ? s[id] / v : 0;
+			for (const id of base) { bs[id] = bv > 0 ? bs[id] / bv : 0; ad[id] = bv > 0 ? ad[id] / bv : 0; }
 			return {
 				voterShare: allV ? v / allV : 0,
 				turnout: c ? v / c : 0,
 				shares: s,
-				before: { dem: bv ? bd / bv : 0, turnout: bc ? bv / bc : 0, voterShare: allBase ? bv / allBase : 0 },
-				additive: bv ? ad / bv : 0
+				before: { shares: bs, turnout: bc ? bv / bc : 0, voterShare: allBase ? bv / allBase : 0 },
+				additive: ad
 			};
 		}
 	};
