@@ -1,4 +1,4 @@
-"""Per-tract voter cells (age x race x edu x sex) calibrated to real results.
+"""Per-tract voter cells (age x race x edu x sex x place) calibrated to real results.
 
 1. Composition: citizen voting-age population (CVAP) per tract in 80 cells, by iterative
    proportional fitting (IPF). Seed = joint distribution of citizens 18+ in the tract's PUMA
@@ -8,12 +8,13 @@
      college | age x sex    B15001 (18+)
      college | race x sex   C15002B/D/H/I + B15002 (25+; "Other" = remainder)
    Race and age x sex are applied last, so those totals are exact; education is approximate.
+   Everyone in a tract is in the tract's place class (urban / suburban / rural, urbanicity.py).
 2. Behavior: CES turnout / Dem share per state x cell (ces_model.py).
 3. Calibration per tract and election: one logit offset for turnout and one for Dem share,
    shared by all cells, so the cells reproduce the tract's real two-party votes exactly.
 
 Usage: python demographics.py [--force] WI [NC ...]
-Output: data/work/<USPS>/demo/<election>.npz  (geoid, cvap[T,80], voters[T,80], dem[T,80])
+Output: data/work/<USPS>/demo/<election>.npz  (geoid, cvap[T,N], voters[T,N], dem[T,N]; N = cells.N_CELLS)
         data/work/<USPS>/tract_cd.csv          (tract population split across current districts)
 """
 from __future__ import annotations
@@ -93,7 +94,7 @@ def pums_seed(usps: str) -> dict[str, np.ndarray]:
     d = d[d.cell >= 0]
     out = {}
     for puma, g in d.groupby("PUMA"):
-        out[f"{fips}{int(puma):05d}"] = np.bincount(g.cell, weights=g.PWGTP, minlength=cells.N_CELLS)
+        out[f"{fips}{int(puma):05d}"] = np.bincount(g.cell, weights=g.PWGTP, minlength=cells.N_PERSON)
     return out
 
 
@@ -199,7 +200,8 @@ def acs_ids(usps: str, geoids: list[str]) -> pd.Index:
 
 
 def composition(usps: str, geoids: list[str]) -> np.ndarray:
-    """[T, 80] estimated citizen voting-age population per cell."""
+    """[T, N_CELLS] estimated citizen voting-age population per cell: the 80 person cells by IPF,
+    all in the tract's place class (urbanicity.py)."""
     idx = acs_ids(usps, geoids)
     tabs = {t: acs_table(t) for t in ACS_TABLES}
     check_layouts({t: d[d.index.str.startswith(sources.USPS_TO_FIPS[usps])] for t, d in tabs.items()})
@@ -225,8 +227,10 @@ def composition(usps: str, geoids: list[str]) -> np.ndarray:
         print(f"[{usps}] {missing}/{len(geoids)} tracts use the statewide PUMS mix (PUMA not in PUMS)")
     seed = np.stack([seeds.get(k, state_seed) for k in keys]).astype(float)
     seed = seed / np.maximum(seed.sum(axis=1, keepdims=True), 1) + 1e-4  # small floor: no cell is impossible
-    x = ipf(seed.reshape(-1, *cells.SHAPE), race, age_sex, edu_age_sex, edu_race_sex)
-    return x.reshape(len(geoids), cells.N_CELLS)
+    x = ipf(seed.reshape(-1, *cells.PERSON_SHAPE), race, age_sex, edu_age_sex, edu_race_sex)
+    import urbanicity
+    place = urbanicity.load().reindex(geoids).fillna(1).astype(int).to_numpy()  # unclassed -> suburban
+    return cells.expand_places(x.reshape(len(geoids), cells.N_PERSON), place)
 
 
 # ---------- calibration ----------
@@ -242,7 +246,7 @@ def solve_offset(base_logit, weights, target, lo=-12.0, hi=12.0, iters=60):
 
 
 def calibrate(cvap, turnout, dem, votes_D, votes_R):
-    """Per-tract offsets so cells reproduce real two-party votes. Returns voters[T,80], dem_votes[T,80]."""
+    """Per-tract offsets so cells reproduce real two-party votes. Returns cvap, voters, dem_votes [T, N]."""
     V = votes_D + votes_R
     tot = cvap.sum(axis=1)
     # CVAP is a survey estimate; where it can't hold the real vote count, scale it up

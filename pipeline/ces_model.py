@@ -4,8 +4,8 @@ from the Cooperative Election Study (validated vote).
 Two weighted ridge logistic regressions per election:
   turnout:  P(voted | cell, state)         (validated vote record; unmatched = non-voter, per CES guide)
   vote:     P(Dem | cell, state, voted)    (self-reported, two-party)
-Features: main effects and pairwise interactions of age/race/edu/sex, plus state, region x
-demographic and state x race/edu effects. Penalties shrink sparse state-level effects toward
+Features: main effects and pairwise interactions of age/race/edu/sex/place, plus state, region x
+demographic and state x race/edu/place effects. Penalties shrink sparse state-level effects toward
 regional and national patterns. Tract calibration later fixes levels to real results, so what
 matters most here is the *relative* pattern between groups within each state.
 
@@ -41,18 +41,19 @@ CES = {
 
 # (block name, penalty). Larger penalty = more shrinkage toward 0.
 BLOCKS = [
-    ("age", 0.1), ("race", 0.1), ("edu", 0.1), ("sex", 0.1),
+    ("age", 0.1), ("race", 0.1), ("edu", 0.1), ("sex", 0.1), ("place", 0.1),
     ("age*race", 1), ("age*edu", 1), ("age*sex", 1), ("race*edu", 1), ("race*sex", 1), ("edu*sex", 1),
-    ("region*age", 2), ("region*race", 2), ("region*edu", 2),
-    ("state", 3), ("state*race", 15), ("state*edu", 15),
+    ("age*place", 1), ("race*place", 1), ("edu*place", 1), ("sex*place", 1),
+    ("region*age", 2), ("region*race", 2), ("region*edu", 2), ("region*place", 2),
+    ("state", 3), ("state*race", 15), ("state*edu", 15), ("state*place", 15),
 ]
 
 
-def design(age, race, edu, sex, state, region) -> sp.csr_matrix:
+def design(age, race, edu, sex, place, state, region) -> sp.csr_matrix:
     """Sparse one-hot design matrix (all levels kept; ridge handles identifiability) + intercept."""
     cols, offset, n = [], 0, len(age)
-    sizes = {"age": 4, "race": 5, "edu": 2, "sex": 2, "state": 50, "region": 4}
-    vals = {"age": age, "race": race, "edu": edu, "sex": sex, "state": state, "region": region}
+    sizes = {"age": 4, "race": 5, "edu": 2, "sex": 2, "place": 3, "state": 50, "region": 4}
+    vals = {"age": age, "race": race, "edu": edu, "sex": sex, "place": place, "state": state, "region": region}
     pen = [0.0]  # intercept
     rows = [np.arange(n)]
     cols.append(np.zeros(n, int))
@@ -91,15 +92,15 @@ def all_cells_grid():
     """Design inputs for every (state, cell) pair, in [state][cell] order."""
     s, c = np.meshgrid(np.arange(50), np.arange(cells.N_CELLS), indexing="ij")
     s, c = s.ravel(), c.ravel()
-    a, r, e, x = np.unravel_index(c, cells.SHAPE)
+    a, r, e, x, p = np.unravel_index(c, cells.SHAPE)
     reg = np.array([cells.REGION_OF[USPS[i]] for i in s])
-    return a, r, e, x, s, reg
+    return a, r, e, x, p, s, reg
 
 
 def run(eid: str) -> None:
     cfg = CES[eid]
     f = sources.dataverse_file(cfg["dataset"], cfg["folder"], cfg["file"])
-    use = ["birthyr", cfg["gender"], "educ", "race", "hispanic", "inputstate", "cit1",
+    use = ["birthyr", cfg["gender"], "educ", "race", "hispanic", "urbancity", "inputstate", "cit1",
            "vvweight_post", "commonpostweight", cfg["vote"],
            "CL_2020gvm" if cfg["year"] == 2020 else "TS_g2024"]
     d = pd.read_csv(f, usecols=use, low_memory=False)
@@ -108,19 +109,19 @@ def run(eid: str) -> None:
     d = d[d.cell >= 0]
     d["st"] = d.inputstate.map({k: USPS.index(v) for k, v in FIPS_NUM.items()})
     d["reg"] = d.inputstate.map(lambda k: cells.REGION_OF[FIPS_NUM[k]])
-    a, r, e, x = np.unravel_index(d.cell.to_numpy(), cells.SHAPE)
+    a, r, e, x, p = np.unravel_index(d.cell.to_numpy(), cells.SHAPE)
 
     out = {}
     grid = all_cells_grid()
     Xg, _ = design(*grid)
     # turnout: post-wave respondents with validated-vote weights
     t = d.vvweight_post.notna()
-    X, pen = design(a[t], r[t], e[t], x[t], d.st[t].to_numpy(), d.reg[t].to_numpy())
+    X, pen = design(a[t], r[t], e[t], x[t], p[t], d.st[t].to_numpy(), d.reg[t].to_numpy())
     beta = fit(X, cfg["voted"](d[t]).to_numpy(float), d.vvweight_post[t].to_numpy(), pen)
     out["turnout"] = expit(Xg @ beta).reshape(50, cells.N_CELLS)
     # vote choice: two-party voters
     v = d[cfg["vote"]].isin([cfg["dem"], cfg["rep"]]) & d.commonpostweight.notna()
-    X, pen = design(a[v], r[v], e[v], x[v], d.st[v].to_numpy(), d.reg[v].to_numpy())
+    X, pen = design(a[v], r[v], e[v], x[v], p[v], d.st[v].to_numpy(), d.reg[v].to_numpy())
     beta = fit(X, (d[cfg["vote"]][v] == cfg["dem"]).to_numpy(float), d.commonpostweight[v].to_numpy(), pen)
     out["dem"] = expit(Xg @ beta).reshape(50, cells.N_CELLS)
 

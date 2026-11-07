@@ -34,5 +34,6 @@
       "credit": "2024 precinct data: The New York Times",
       "cellsFile": "elections/pres-2024.cells.json"
     }
-  ]
+  ],
+  "localFile": "local.json"
 }

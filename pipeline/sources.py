@@ -17,7 +17,7 @@ ROOT = Path(__file__).parent
 RAW = ROOT / "data" / "raw"
 WORK = ROOT / "data" / "work"
 PLANS = ROOT / "plans"
-ALLOWED_HOSTS = {"www2.census.gov", "dataverse.harvard.edu", "int.nyt.com"}
+ALLOWED_HOSTS = {"www2.census.gov", "dataverse.harvard.edu", "int.nyt.com", "www.usreligioncensus.org"}
 
 # Current (119th Congress) district boundaries, cartographic (shoreline-clipped)
 CD119_URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_cd119_500k.zip"
@@ -73,6 +73,14 @@ def download(url: str, dest: Path) -> Path:
     with open(RAW / "SHA256SUMS", "a") as f:
         f.write(f"{digest}  {dest.relative_to(RAW)}  {url}\n")
     return dest
+
+
+# 2020 U.S. Religion Census (ASARB): adherents per denomination per county (XLSX, read as XML)
+RELIGION_URL = "https://www.usreligioncensus.org/sites/default/files/2023-06/2020_USRC_Group_Detail.xlsx"
+
+
+def religion() -> Path:
+    return download(RELIGION_URL, RAW / "religion2020" / "2020_USRC_Group_Detail.xlsx")
 
 
 def cd119() -> Path:

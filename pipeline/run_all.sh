@@ -33,6 +33,8 @@ B=$(pending build); echo "== build units + elections: ${B:-nothing to do}"
 G=$(pending generate); echo "== generate fair plans: ${G:-nothing to do}"
 [ -n "$G" ] && printf '%s\n' $G | xargs -P 6 -I{} sh -c '$PY generate.py $F {} > data/work/logs/{}.gen.log 2>&1 || echo "GEN FAILED {}"'
 echo "== survey model"; $PY ces_model.py $F 2>&1 | grep -vi warning
+echo "== place classes"; $PY urbanicity.py $F
+echo "== local factors"; $PY local_factors.py $F
 D=$(pending demo); echo "== demographics: ${D:-nothing to do}"
 [ -n "$D" ] && printf '%s\n' $D | xargs -P 3 -I{} sh -c '$PY demographics.py $F {} > data/work/logs/{}.demo.log 2>&1 || echo "DEMO FAILED {}"'
 echo "== export"

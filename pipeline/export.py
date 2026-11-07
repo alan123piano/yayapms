@@ -5,13 +5,16 @@
 
 A map pack (web/static/maps/<id>/) = manifest.json + districts.geojson (geometry only) +
 elections/<election>.json ({"results": {district_id: {"D": votes, "R": votes}}}) for every
-election in sources.ELECTIONS with data. See MapManifest in web/src/lib/types.ts.
+election in sources.ELECTIONS with data, plus per election its demographic cells
+(<election>.cells.json header + <election>.cells.bin, sparse) and per pack local.json (local
+factors per district and which districts border which). See MapManifest in web/src/lib/types.ts.
 
 Usage: python export.py
 """
 from __future__ import annotations
 
 import json
+import struct
 
 import geopandas as gpd
 import numpy as np
@@ -47,7 +50,7 @@ def round_coords(geom, nd=PRECISION):
 
 # ---------- demographic cells ----------
 def tract_cells(usps: str, eid: str):
-    """(geoids, [T, 240] = cvap | voters | dem per cell) for a state, or None if not built."""
+    """(geoids, [T, 3N] = cvap | voters | dem per cell) for a state, or None if not built."""
     f = WORK / usps / "demo" / f"{eid}.npz"
     if not f.exists():
         return None
@@ -56,7 +59,7 @@ def tract_cells(usps: str, eid: str):
 
 
 def match_totals(c: np.ndarray, D: np.ndarray, R: np.ndarray) -> np.ndarray:
-    """Re-calibrate district cell rows [N, 240] so voters and Dem votes sum to the real D, R."""
+    """Re-calibrate district cell rows [districts, 3N] so voters and Dem votes sum to the real D, R."""
     from demographics import solve_offset
     n = cells.N_CELLS
     cv, vo, de = c[:, :n], c[:, n:2 * n], c[:, 2 * n:]
@@ -67,18 +70,72 @@ def match_totals(c: np.ndarray, D: np.ndarray, R: np.ndarray) -> np.ndarray:
     return np.concatenate([cv, vo, de], axis=1)
 
 
-def cells_json(rows: dict[str, np.ndarray]) -> dict:
+def write_cells(out, eid: str, rows: dict[str, np.ndarray]) -> str:
+    """Write <eid>.cells.json (header) + <eid>.cells.bin; returns the header's name.
+    Binary, per region in header["regions"] order, little-endian: uint16 m = non-empty cells,
+    then m uint16 cell indices, then m float32 values for each of header["fields"]."""
     bad = [k for k, v in rows.items() if not np.isfinite(v).all() or (v < -0.5).any()]
     assert not bad, f"invalid demographic cells (NaN/negative) for {bad[:10]}"
-    return {"dims": cells.DIMS, "order": ["age", "race", "edu", "sex"],
-            "fields": ["cvap", "voters", "dem"],
-            "results": {k: np.rint(v).astype(int).tolist() for k, v in rows.items()}}
+    n = cells.N_CELLS
+    ids = sorted(rows)
+    buf = bytearray()
+    for k in ids:
+        v = np.maximum(rows[k].reshape(3, n), 0)
+        nz = np.flatnonzero(v[0] > 0.5)  # cells with any citizens of voting age
+        buf += struct.pack("<H", len(nz)) + nz.astype("<u2").tobytes()
+        buf += np.rint(v[:, nz]).astype("<f4").tobytes()
+    (out / "elections" / f"{eid}.cells.bin").write_bytes(bytes(buf))
+    header = {"dims": cells.DIMS, "order": cells.ORDER, "parties": ["D", "R"],
+              "fields": ["cvap", "voters", "dem"], "regions": ids, "bin": f"{eid}.cells.bin"}
+    name = f"elections/{eid}.cells.json"
+    (out / name).write_text(json.dumps(header, separators=(",", ":")))
+    return name
+
+
+def district_factors(num, den) -> list[float]:
+    """Factor shares for one district from its summed numerators and denominators."""
+    return [round(float(a / b), 5) if b > 0 else 0.0 for a, b in zip(num, den)]
+
+
+def neighbors(gdf: gpd.GeoDataFrame) -> dict[str, list[str]]:
+    """District id -> ids of the districts it borders."""
+    g = gdf.to_crs("EPSG:5070").reset_index(drop=True)
+    g["geometry"] = g.geometry.buffer(50)
+    pairs = gpd.sjoin(g[["id", "geometry"]], g[["id", "geometry"]], predicate="intersects")
+    out: dict[str, list[str]] = {i: [] for i in g.id}
+    for a, b in zip(pairs.id_left, pairs.id_right):
+        if a != b:
+            out[a].append(b)
+    return {k: sorted(set(v)) for k, v in out.items()}
+
+
+def local_table() -> pd.DataFrame:
+    """Per tract: numerator and denominator columns of each local factor (local_factors.py)."""
+    import local_factors
+    return local_factors.load()
+
+
+def lf_sums(lf: pd.DataFrame, geoids, keys, w: np.ndarray) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Weighted sums of the factor numerators / denominators per district key."""
+    import local_factors
+    ids = list(local_factors.factor_labels())
+    rows = lf.loc[list(geoids)]
+    num = pd.DataFrame(rows[[f"{i}_num" for i in ids]].to_numpy() * w[:, None], columns=ids)
+    den = pd.DataFrame(rows[[f"{i}_den" for i in ids]].to_numpy() * w[:, None], columns=ids)
+    num["k"] = list(keys)
+    den["k"] = list(keys)
+    return num.groupby("k").sum(), den.groupby("k").sum()
 
 
 def write_pack(pack_id: str, gdf: gpd.GeoDataFrame, manifest: dict, results: dict[str, dict],
-               extra: dict | None = None, cell_rows: dict[str, dict] | None = None) -> None:
+               extra: dict | None = None, cell_rows: dict[str, dict] | None = None,
+               factors: dict[str, list[float]] | None = None) -> None:
     out = MAPS / pack_id
     out.mkdir(parents=True, exist_ok=True)
+    import local_factors
+    local = {"factors": [{"id": k, "label": v} for k, v in local_factors.factor_labels().items()],
+             "values": factors or {}, "neighbors": neighbors(gdf)}
+    (out / "local.json").write_text(json.dumps(local, separators=(",", ":")))
     gdf = gdf.to_crs("EPSG:4326")
     gdf["geometry"] = gdf.geometry.simplify(SIMPLIFY_DEG, preserve_topology=True)
     feats = []
@@ -96,11 +153,9 @@ def write_pack(pack_id: str, gdf: gpd.GeoDataFrame, manifest: dict, results: dic
         meta = {k: v for k, v in ELECTIONS[eid].items() if not callable(v)}
         entry = {"id": eid, "file": f"elections/{eid}.json", **meta}
         if cell_rows and cell_rows.get(eid):
-            name = f"elections/{eid}.cells.json"
-            (out / name).write_text(json.dumps(cells_json(cell_rows[eid]), separators=(",", ":")))
-            entry["cellsFile"] = name
+            entry["cellsFile"] = write_cells(out, eid, cell_rows[eid])
         elections.append(entry)
-    manifest = {"file": "districts.geojson", **manifest, "elections": elections}
+    manifest = {"file": "districts.geojson", **manifest, "elections": elections, "localFile": "local.json"}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     for name, obj in (extra or {}).items():
         (out / name).write_text(json.dumps(obj, indent=1))
@@ -140,8 +195,18 @@ def current_pack() -> list[str]:
     rows, built = [], []
     results: dict[str, dict] = {e: {} for e in ELECTIONS}
     cell_rows: dict[str, dict] = {e: {} for e in ELECTIONS}
+    lf = local_table()
+    factors: dict[str, list[float]] = {}
     for fips, (usps, sname) in sources.STATES.items():
         split_csv = WORK / usps / "tract_cd.csv"
+        if split_csv.exists():
+            sp = pd.read_csv(split_csv, dtype={"GEOID": str, "cd": str})
+            sp["w"] = sp["pop"] / sp.groupby("GEOID")["pop"].transform("sum").replace(0, np.nan)
+            sp["w"] = sp["w"].fillna(1 / sp.groupby("GEOID")["pop"].transform("size"))
+            sp = sp[sp.GEOID.isin(lf.index)]
+            num, den = lf_sums(lf, sp.GEOID, sp.cd, sp.w.to_numpy())
+            for c in num.index:
+                factors[f"{usps}-{'AL' if int(c) == 0 else f'{int(c):02d}'}"] = district_factors(num.loc[c], den.loc[c])
         for e in ELECTIONS:
             tc = tract_cells(usps, e)
             vf = WORK / usps / "current" / f"{e}.csv"
@@ -183,7 +248,7 @@ def current_pack() -> list[str]:
         "name": "Current districts (119th Congress)",
         "description": "119th Congress (2025–2027) district boundaries, Census cartographic file.",
         **common_manifest(),
-    }, results, cell_rows=cell_rows)
+    }, results, cell_rows=cell_rows, factors=factors)
     return built
 
 
@@ -192,6 +257,8 @@ def fair_pack() -> list[str]:
     rows, reports, done = [], {}, []
     results: dict[str, dict] = {e: {} for e in ELECTIONS}
     cell_rows: dict[str, dict] = {e: {} for e in ELECTIONS}
+    lf = local_table()
+    factors: dict[str, list[float]] = {}
     for fips, (usps, sname) in sources.STATES.items():
         asg = PLANS / usps / "fair_assignment.csv"
         if not asg.exists():
@@ -204,6 +271,8 @@ def fair_pack() -> list[str]:
         votes = {e: pd.read_csv(f, dtype={"GEOID": str}).merge(a, on="GEOID").groupby("district")[["D", "R"]].sum()
                  for e in ELECTIONS if (f := WORK / usps / "votes" / f"{e}.csv").exists()}
         dist_of = dict(zip(a.GEOID, a.district))
+        a_lf = a[a.GEOID.isin(lf.index)]
+        fnum, fden = lf_sums(lf, a_lf.GEOID, a_lf.district, np.ones(len(a_lf)))
         tcells = {}
         for e in ELECTIONS:
             tc = tract_cells(usps, e)
@@ -229,6 +298,8 @@ def fair_pack() -> list[str]:
             for e, byd in tcells.items():
                 if idx in byd:
                     cell_rows[e][did] = byd[idx]
+            if idx in fnum.index:
+                factors[did] = district_factors(fnum.loc[idx], fden.loc[idx])
         reports[usps] = json.loads((PLANS / usps / "fair_report.json").read_text())
     if not rows:
         print("us-house-fair: no states generated yet")
@@ -241,7 +312,7 @@ def fair_pack() -> list[str]:
                        "States not yet generated are absent.",
         "reportFile": "report.json",
         **common_manifest(),
-    }, results, extra={"report.json": reports}, cell_rows=cell_rows)
+    }, results, extra={"report.json": reports}, cell_rows=cell_rows, factors=factors)
     return done
 
 
