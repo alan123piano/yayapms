@@ -55,13 +55,26 @@ try {
 				const rb = basis.regions.get(r.id);
 				let fd = 0;
 				for (let i = 0; i < n; i++) {
-					const p = 1 / (1 + Math.exp(-(basis.alpha[0][i] + rb.rho[0])));
+					const p = 1 / (1 + Math.exp(-(rb.u0[0][i] - rb.u0[1][i])));
 					fd += rb.V[i] * p;
 					natV[i] += rb.V[i]; natD[i] += rb.P[0][i]; fitD[i] += rb.V[i] * p;
 				}
-				near(fd / V, r.demShare, 1e-8, `${r.id}: basis reproduces the district`);
+				near(fd / rb.V.reduce((a, x) => a + x, 0), r.demShare, 1e-8, `${r.id}: basis reproduces the district`);
 			}
 			for (let i = 0; i < n; i++) if (natV[i] > 1000) near(fitD[i] / natV[i], natD[i] / natV[i], 1e-6, `cell ${i}: basis reproduces the national cell`);
+			// ...and every state's race x education totals (the state layer)
+			{
+				const acc = {};
+				for (const r of rs) {
+					const rb = basis.regions.get(r.id);
+					for (let i = 0; i < n; i++) {
+						const l = basis.labels[i], key = `${r.group}|${l.race}|${l.edu}`;
+						const a = (acc[key] ??= { v: 0, d: 0, f: 0 });
+						a.v += rb.V[i]; a.d += rb.P[0][i]; a.f += rb.V[i] / (1 + Math.exp(-(rb.u0[0][i] - rb.u0[1][i])));
+					}
+				}
+				for (const [key, a] of Object.entries(acc)) if (a.v > 2000) near(a.f / a.v, a.d / a.v, 1e-5, `${key}: state layer reproduces the state's class`);
+			}
 
 			// 2. two-party: exactly the real result + uniform swing
 			for (const sw of [-7, 0, 4.5]) {

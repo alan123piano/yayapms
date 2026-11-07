@@ -37,7 +37,7 @@ export const SHADINGS = [
 	{ id: 'solid', label: 'Solid', hint: 'Full color for whoever wins' },
 	{ id: 'tiers', label: 'Tiers', hint: 'Safe / Likely / Lean / Tilt: 15+, 8-15, 3-8, <3 point lead' },
 	{ id: 'gradient', label: 'Gradient', hint: 'Fades smoothly toward a tie; full color at a 25+ point lead' },
-	{ id: 'residual', label: 'Residual', hint: 'How much more D or R each district voted than its demographics predict; full color at 40+ points' }
+	{ id: 'residual', label: 'Residual', hint: 'How much more D or R each district voted than the model explains (demographics, state patterns, local factors); full color at 40+ points' }
 ] as const;
 export type ShadingId = (typeof SHADINGS)[number]['id'];
 /** color strength (%) per rating level [-, Tilt, Lean, Likely, Safe] in Tiers mode */

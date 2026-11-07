@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { fmtMargin } from './format';
 	import { ratingText } from './shading';
-	import { residualPoints, twoPartyD, type RegionBasis } from './model';
+	import { decomposition, STAGE_LABELS, type RegionBasis } from './model';
 	import { margin } from './sim';
 	import type { Outcome, Party, Region } from './types';
 
@@ -40,8 +40,11 @@
 	<div>{ratingText(o, byId)}{o.manual ? ' (manual)' : ''}</div>
 	{#if r.seats !== 1}<div>{r.seats} seats</div>{/if}
 	{#if hasCells && residual}
-		<div class="muted small">
-			Demographics predict {fmtMargin(margin(twoPartyD(residual.expected), 0))}; district effect {fmtMargin(residualPoints(residual))}
+		<div class="muted small parts">
+			{#each decomposition(residual) as part (part.id)}
+				<span>{part.id === 'unexplained' ? 'Unexplained' : STAGE_LABELS[part.id]}</span>
+				<span>{fmtMargin(part.points)}</span>
+			{/each}
 		</div>
 	{/if}
 </div>
@@ -58,6 +61,16 @@
 		box-shadow: 0 4px 16px rgb(0 0 0 / 0.18);
 		z-index: 10;
 		max-width: 260px;
+	}
+	.parts {
+		display: grid;
+		grid-template-columns: auto auto;
+		column-gap: 10px;
+		margin-top: 4px;
+	}
+	.parts span:nth-child(2n) {
+		text-align: right;
+		font-variant-numeric: tabular-nums;
 	}
 	.share {
 		display: flex;
