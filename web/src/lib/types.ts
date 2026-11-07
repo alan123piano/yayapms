@@ -23,6 +23,8 @@ export interface MapManifest {
 	bordersFile?: string;
 	/** optional extra JSON (e.g. generation report) shown in the info panel */
 	reportFile?: string;
+	/** optional local factors per region and region adjacency (LocalData), relative to the manifest */
+	localFile?: string;
 }
 
 export interface ElectionRef {
@@ -44,8 +46,17 @@ export interface CellData {
 	order: string[];
 	/** the election's parties (default D, R): the last one is "everyone else" in `results` */
 	parties?: string[];
-	/** per region: [cvap x N, voters x N, then votes x N for each party but the last] for N cells */
+	/** per region: [cvap x N, voters x N, then votes x N for each party but the last] for N cells.
+	 *  On disk this may instead be a sparse binary file (`bin`, see loader.decodeCells). */
 	results: Record<string, number[]>;
+}
+
+/** Local factors (traits of a place, e.g. religion, income) per region, and which regions border which. */
+export interface LocalData {
+	factors: { id: string; label: string }[];
+	/** per region: one value per factor (shares 0..1, or log10 density) */
+	values: Record<string, number[]>;
+	neighbors: Record<string, string[]>;
 }
 
 export interface Election extends Omit<ElectionRef, 'file' | 'cellsFile'> {
@@ -76,6 +87,7 @@ export interface LoadedMap {
 	elections: Election[];
 	borders?: FeatureCollection<Geometry>;
 	report?: unknown;
+	local?: LocalData;
 }
 
 /** a party's appeal to the voters matching `filter`, in points of its share of them at the

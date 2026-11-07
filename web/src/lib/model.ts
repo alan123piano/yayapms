@@ -1,5 +1,5 @@
 import { cellEffects, cellLabels, filterKey, matches, type Filter, type Segment } from './demographics';
-import type { CellData, Party, Region } from './types';
+import type { CellData, LocalData, Party, Region } from './types';
 
 /*
  * The vote model. Every region's electorate is split into demographic cells c (age x race x
@@ -71,6 +71,8 @@ export interface RegionBasis {
 	/** per baseline party: district residual vs. its state (log-odds vs the reference party;
 	 *  vote-weighted mean 0 within each state) */
 	rho: Float64Array;
+	/** per baseline party: the part of rho that local factors and neighboring districts explain */
+	rhoHat: Float64Array;
 	/** per baseline party: real share */
 	actual: Record<string, number>;
 	/** per baseline party: the share if every cell voted at its national rate (demographics alone) */
@@ -101,6 +103,18 @@ export interface Basis {
 	/** per cell: national voters (weights for a group's baseline share) */
 	voters: Float64Array;
 	regions: Map<string, RegionBasis>;
+	/** how well the layers beyond demographics explain the district residual */
+	fit: BasisFit;
+}
+
+export interface BasisFit {
+	/** spread (vote-weighted sd) of the D-vs-R margin residual after each layer, in points */
+	spread: { id: StageId | 'unexplained'; points: number }[];
+	/** local factors: cross-validated share of the within-state residual they explain, and each
+	 *  factor's effect on the D-vs-R margin per standard deviation of the factor (points) */
+	local: { r2: number; effects: { id: string; label: string; points: number }[] } | null;
+	/** neighbors: how much of a district's remaining residual follows its neighbors' (0..1) */
+	neighbors: { weight: number } | null;
 }
 
 /** Baseline parties of an election with demographic cells (older files: D, then R). */
@@ -120,7 +134,7 @@ const STATE_LAYER_DIMS = ['race', 'edu'];
  * (maximum likelihood with cell, state x class and district fixed effects) so that real district
  * results, national per-cell totals and per-state race x education totals all hold exactly.
  */
-export function fitBasis(regions: Region[], cells?: CellData): Basis {
+export function fitBasis(regions: Region[], cells?: CellData, local?: LocalData): Basis {
 	const labels = cells ? cellLabels(cells) : [{}];
 	const n = labels.length;
 	const parties = cellParties(cells);
@@ -175,7 +189,7 @@ export function fitBasis(regions: Region[], cells?: CellData): Basis {
 			P[ref][i] = Math.max(0, V[i] - s);
 		}
 		const u0 = parties.map(() => new Float64Array(n));
-		return { id: r.id, group: r.group, V, C, P, u0, rho: new Float64Array(K), actual, expected: { ...actual }, stages: [] };
+		return { id: r.id, group: r.group, V, C, P, u0, rho: new Float64Array(K), rhoHat: new Float64Array(K), actual, expected: { ...actual }, stages: [] };
 	});
 
 	const tot = rows.map((r) => sum(r.V));
@@ -286,6 +300,9 @@ export function fitBasis(regions: Region[], cells?: CellData): Basis {
 		}
 	}
 
+	// local factors and neighbors: explain the within-state residual (layers 3 and 4)
+	const localFit = explainResidual(rows, tot, sOf, K, local);
+
 	// baseline utilities and what each layer explains
 	const shareOf = (r: RegionBasis, j: number, util: (k: number, i: number) => number) => {
 		const acc = new Float64Array(K);
@@ -305,12 +322,156 @@ export function fitBasis(regions: Region[], cells?: CellData): Basis {
 			for (let i = 0; i < n; i++) e += r.V[i] * rate[k][i];
 			return [p, tot[j] ? e / tot[j] : r.actual[p]];
 		}));
+		const base = (k: number, i: number) => alpha[k][i] + gamma[k][g(i)];
 		r.stages = [
 			{ id: 'demographics', shares: r.expected },
-			...(states.length > 1 ? [{ id: 'state' as const, shares: shareOf(r, j, (k, i) => alpha[k][i] + gamma[k][g(i)]) }] : [])
+			...(states.length > 1 ? [{ id: 'state' as const, shares: shareOf(r, j, base) }] : []),
+			...(localFit.local ? [{ id: 'local' as const, shares: shareOf(r, j, (k, i) => base(k, i) + localFit.localPart[j][k]) }] : []),
+			...(localFit.neighbors ? [{ id: 'neighbors' as const, shares: shareOf(r, j, (k, i) => base(k, i) + r.rhoHat[k]) }] : [])
 		];
 	});
-	return { n, labels, parties, alpha, rate, voters: Vc, regions: new Map(rows.map((r) => [r.id, r])) };
+	const regionsMap = new Map(rows.map((r) => [r.id, r]));
+	const ids: (StageId | 'unexplained')[] = [...(rows[0]?.stages.map((x) => x.id) ?? []), 'unexplained'];
+	const spread = ids.map((id) => {
+		const res = rows.map((r) => {
+			const st = id === 'unexplained' ? null : r.stages.find((x) => x.id === id);
+			return margin2(r.actual) - (st ? margin2(st.shares) : margin2(r.actual));
+		});
+		return { id, points: wsd(res, tot) };
+	});
+	return {
+		n, labels, parties, alpha, rate, voters: Vc, regions: regionsMap,
+		fit: { spread: spread.slice(0, -1), local: localFit.local, neighbors: localFit.neighbors }
+	};
+}
+
+/** vote-weighted standard deviation around 0 */
+function wsd(x: number[], w: number[]): number {
+	const W = w.reduce((a, b) => a + b, 0);
+	return W ? Math.sqrt(x.reduce((a, v, i) => a + w[i] * v * v, 0) / W) : 0;
+}
+
+/** Solve (A + λI) x = b for a small dense symmetric system. */
+function solve(A: number[][], b: number[], lambda: number): number[] {
+	const n = b.length;
+	const M = A.map((row, i) => [...row.map((v, j) => v + (i === j ? lambda : 0)), b[i]]);
+	for (let p = 0; p < n; p++) {
+		let mx = p;
+		for (let r = p + 1; r < n; r++) if (Math.abs(M[r][p]) > Math.abs(M[mx][p])) mx = r;
+		[M[p], M[mx]] = [M[mx], M[p]];
+		if (Math.abs(M[p][p]) < 1e-12) continue;
+		for (let r = 0; r < n; r++) {
+			if (r === p) continue;
+			const f = M[r][p] / M[p][p];
+			for (let c = p; c <= n; c++) M[r][c] -= f * M[p][c];
+		}
+	}
+	return M.map((row, i) => (Math.abs(row[i]) < 1e-12 ? 0 : row[n] / row[i]));
+}
+
+/** weighted ridge regression of y on X (columns already standardized, no intercept needed) */
+function ridge(X: number[][], y: number[], w: number[], lambda: number): number[] {
+	const p = X[0]?.length ?? 0;
+	const A = Array.from({ length: p }, () => new Array(p).fill(0));
+	const b = new Array(p).fill(0);
+	X.forEach((x, i) => {
+		for (let a = 0; a < p; a++) {
+			b[a] += w[i] * x[a] * y[i];
+			for (let c = 0; c < p; c++) A[a][c] += w[i] * x[a] * x[c];
+		}
+	});
+	return solve(A, b, lambda);
+}
+
+/**
+ * Layers 3 and 4: regress each party's within-state residual ρ on the region's local factors
+ * (each demeaned within its state and standardized, so they explain differences between
+ * districts of the same state), ridge-penalized with the penalty picked by 5-fold
+ * cross-validation; then the part left over is partly shared with neighboring districts:
+ * e_d ≈ w · mean(e over d's neighbors), w fitted by weighted least squares in [0, 1].
+ * Writes rhoHat (local + neighbor part) on each row.
+ */
+function explainResidual(
+	rows: RegionBasis[], tot: number[], sOf: Int32Array, K: number, local?: LocalData
+): { local: BasisFit['local']; neighbors: BasisFit['neighbors']; localPart: Float64Array[] } {
+	const ref = K - 1;
+	const R = rows.length;
+	const localPart = rows.map(() => new Float64Array(K));
+	const none = { local: null, neighbors: null, localPart };
+	if (!local || R < 30 || K < 2) return none;
+	const F = local.factors.length;
+	const raw = rows.map((r) => local.values[r.id]);
+	if (raw.some((v) => !v || v.length !== F)) return none;
+	const w = tot.map((t) => t / (tot.reduce((a, b) => a + b, 0) / R)); // mean weight 1
+
+	// demean within state, then standardize (weighted)
+	const X = raw.map((v) => [...v]);
+	const nS = Math.max(...sOf) + 1;
+	for (let f = 0; f < F; f++) {
+		const m = new Float64Array(nS), ws = new Float64Array(nS);
+		X.forEach((x, j) => { m[sOf[j]] += w[j] * x[f]; ws[sOf[j]] += w[j]; });
+		X.forEach((x, j) => { x[f] -= ws[sOf[j]] ? m[sOf[j]] / ws[sOf[j]] : 0; });
+		const sd = Math.sqrt(X.reduce((a, x, j) => a + w[j] * x[f] * x[f], 0) / R) || 1;
+		X.forEach((x) => { x[f] /= sd; });
+	}
+	// pick the ridge penalty by 5-fold cross-validation on the D-vs-R residual (or party 0's)
+	const target = (k: number) => rows.map((r) => r.rho[k]);
+	const lambdas = [0.3, 1, 3, 10, 30, 100, 300, 1000];
+	const cvR2 = (y: number[], lambda: number) => {
+		let ss = 0, sr = 0;
+		for (let fold = 0; fold < 5; fold++) {
+			const tr = [...Array(R).keys()].filter((j) => j % 5 !== fold);
+			const beta = ridge(tr.map((j) => X[j]), tr.map((j) => y[j]), tr.map((j) => w[j]), lambda);
+			for (let j = fold; j < R; j += 5) {
+				const p = X[j].reduce((a, x, f) => a + x * beta[f], 0);
+				sr += w[j] * (y[j] - p) ** 2;
+				ss += w[j] * y[j] ** 2;
+			}
+		}
+		return ss ? 1 - sr / ss : 0;
+	};
+	const y0 = target(0);
+	let best = lambdas[0], bestR2 = -Infinity;
+	for (const l of lambdas) {
+		const r2 = cvR2(y0, l);
+		if (r2 > bestR2) { bestR2 = r2; best = l; }
+	}
+	const betas: number[][] = [];
+	for (let k = 0; k < ref; k++) {
+		const beta = ridge(X, target(k), w, best);
+		betas.push(beta);
+		rows.forEach((r, j) => { localPart[j][k] = X[j].reduce((a, x, f) => a + x * beta[f], 0); });
+	}
+	// a factor's effect on the D-vs-R margin per sd: logit change ≈ 4 x share change at 50%,
+	// x 200 margin points per share; reported for the D vs R pair (log-odds of D vs R)
+	const effects = local.factors.map((f, i) => ({ id: f.id, label: f.label, points: (betas[0]?.[i] ?? 0) * 50 }));
+
+	// neighbors
+	const index = new Map(rows.map((r, j) => [r.id, j]));
+	const e = rows.map((r, j) => Float64Array.from({ length: K }, (_, k) => (k < ref ? r.rho[k] - localPart[j][k] : 0)));
+	const nb = rows.map((r) => (local.neighbors?.[r.id] ?? []).map((id) => index.get(id)).filter((x): x is number => x !== undefined));
+	let neighbors: BasisFit['neighbors'] = null;
+	const weightOf: number[] = [];
+	if (nb.some((x) => x.length)) {
+		for (let k = 0; k < ref; k++) {
+			let sxy = 0, sxx = 0;
+			rows.forEach((_, j) => {
+				if (!nb[j].length) return;
+				const m = nb[j].reduce((a, q) => a + e[q][k], 0) / nb[j].length;
+				sxy += w[j] * m * e[j][k];
+				sxx += w[j] * m * m;
+			});
+			weightOf.push(sxx ? Math.min(1, Math.max(0, sxy / sxx)) : 0);
+		}
+		neighbors = { weight: weightOf[0] ?? 0 };
+	}
+	rows.forEach((r, j) => {
+		for (let k = 0; k < ref; k++) {
+			const m = nb[j].length ? nb[j].reduce((a, q) => a + e[q][k], 0) / nb[j].length : 0;
+			r.rhoHat[k] = localPart[j][k] + (weightOf[k] ?? 0) * m;
+		}
+	});
+	return { local: { r2: Math.max(0, bestR2), effects }, neighbors, localPart };
 }
 
 /**
@@ -333,6 +494,42 @@ export function demographicsOnly(b: Basis): Basis {
 				stages: r.stages.slice(0, 1)
 			}
 		])
+	);
+	return { ...b, regions };
+}
+
+/** versions of an election the simulation can start from */
+export type BaselineVariant = 'real' | 'model' | 'demographics';
+export const BASELINE_VARIANTS: { id: BaselineVariant; label: string; hint: string }[] = [
+	{ id: 'real', label: 'real result', hint: 'The real result in every district' },
+	{ id: 'model', label: 'model only', hint: 'What demographics, state patterns, local factors and neighbors explain, without the unexplained district residual' },
+	{ id: 'demographics', label: 'demographics only', hint: 'Every voter group votes at its national rate in every district' }
+];
+
+/** The basis for a baseline variant. */
+export function baselineFor(b: Basis, variant: BaselineVariant): Basis {
+	return variant === 'model' ? modelOnly(b) : variant === 'demographics' ? demographicsOnly(b) : b;
+}
+
+/**
+ * The model-only baseline: every layer the model explains (demographics, state patterns, local
+ * factors, neighbors) but not the unexplained district residual.
+ */
+export function modelOnly(b: Basis): Basis {
+	const regions = new Map(
+		[...b.regions].map(([id, r]) => {
+			const u0 = r.u0.map((uk, k) => uk.map((x) => x - r.rho[k] + r.rhoHat[k]));
+			const last = r.stages[r.stages.length - 1]?.shares ?? r.actual;
+			// real votes become the model's: per cell, V x softmax(u0)
+			const P = b.parties.map(() => new Float64Array(b.n));
+			const u = new Float64Array(b.parties.length), pr = new Float64Array(b.parties.length);
+			for (let i = 0; i < b.n; i++) {
+				for (let k = 0; k < u.length; k++) u[k] = u0[k][i];
+				softmax(u, pr);
+				for (let k = 0; k < u.length; k++) P[k][i] = r.V[i] * pr[k];
+			}
+			return [id, { ...r, u0, rho: Float64Array.from(r.rhoHat), actual: { ...last }, P }];
+		})
 	);
 	return { ...b, regions };
 }
@@ -475,10 +672,12 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 	for (const r of regions) {
 		const rb = b.regions.get(r.id);
 		if (!rb) continue;
+		// a turnout increase can't take a cell past 99.5% of its citizens of voting age (or past
+		// its real voters, if those already exceed that); no change leaves it as it is
 		const Vp = rb.V.map((v, i) => {
-			const want = v * fx[i].mult;
-			const cap = rb.C ? rb.C[i] * 0.995 : 0;
-			return cap ? Math.min(want, cap) : want;
+			const m = fx[i].mult;
+			if (m <= 1 || !rb.C) return v * m;
+			return Math.min(v * m, Math.max(v, rb.C[i] * 0.995));
 		});
 		// baseline parties: softmax of the baseline utility (every layer) + appeals
 		let dv = 0, pool = 0;

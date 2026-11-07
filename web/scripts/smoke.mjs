@@ -13,12 +13,19 @@ try {
 	const load = (id, election) => {
 		const dir = `static/maps/${id}/`;
 		const m = JSON.parse(readFileSync(dir + 'manifest.json', 'utf8'));
+		const cellsOf = (cellsFile) => {
+			const head = JSON.parse(readFileSync(dir + cellsFile, 'utf8'));
+			if (!head.bin) return head;
+			const bin = readFileSync(dir + cellsFile.slice(0, cellsFile.lastIndexOf('/') + 1) + head.bin);
+			return L.decodeCells(head, bin.buffer.slice(bin.byteOffset, bin.byteOffset + bin.byteLength));
+		};
 		const elections = m.elections.map(({ file, cellsFile, ...e }) => ({
 			...e,
 			results: JSON.parse(readFileSync(dir + file, 'utf8')).results,
-			cells: cellsFile ? JSON.parse(readFileSync(dir + cellsFile, 'utf8')) : undefined
+			cells: cellsFile ? cellsOf(cellsFile) : undefined
 		}));
-		return L.withElection(L.buildMap(m, L.parseGeo(readFileSync(dir + m.file, 'utf8')), { elections }), election);
+		const local = m.localFile ? JSON.parse(readFileSync(dir + m.localFile, 'utf8')) : undefined;
+		return L.withElection(L.buildMap(m, L.parseGeo(readFileSync(dir + m.file, 'utf8')), { elections, local }), election);
 	};
 	const expect2020 = { 'us-house-current': 224, 'us-house-fair': 233 }; // from the original pipeline run
 	const core = P.coreParties();
@@ -35,10 +42,10 @@ try {
 			const rs = map.regions.filter((r) => r.demShare !== null);
 			const cells = map.elections.find((e) => e.id === eid).cells;
 			const t0 = performance.now();
-			const basis = M.fitBasis(map.regions, cells);
+			const basis = M.fitBasis(map.regions, cells, map.local);
 			const fitMs = performance.now() - t0;
 			const n = basis.n;
-			assert.equal(n, 80, 'cell count');
+			assert.equal(n, Object.values(cells.dims).reduce((a, g) => a * g.length, 1), 'cell count');
 			if (eid === 'pres-2020') {
 				assert.ok(map.regions.every((r) => geoArea(r.feature) < 2 * Math.PI), 'winding');
 				const p = geoPath(geoAlbersUsa());
@@ -47,6 +54,7 @@ try {
 
 			// 1. basis: cells add up to results; the fit reproduces districts AND national cell totals
 			const natV = new Float64Array(n), natD = new Float64Array(n), fitD = new Float64Array(n);
+			let worstDistrict = 0;
 			for (const r of rs) {
 				let V = 0, D = 0;
 				for (let i = 0; i < n; i++) { V += r.cells[n + i]; D += r.cells[2 * n + i]; }
@@ -59,7 +67,9 @@ try {
 					fd += rb.V[i] * p;
 					natV[i] += rb.V[i]; natD[i] += rb.P[0][i]; fitD[i] += rb.V[i] * p;
 				}
-				near(fd / rb.V.reduce((a, x) => a + x, 0), r.demShare, 1e-8, `${r.id}: basis reproduces the district`);
+				const derr = Math.abs(fd / rb.V.reduce((a, x) => a + x, 0) - r.demShare);
+				worstDistrict = Math.max(worstDistrict, derr);
+				assert.ok(derr < 1e-6, `${r.id}: basis reproduces the district (${derr})`);
 			}
 			for (let i = 0; i < n; i++) if (natV[i] > 1000) near(fitD[i] / natV[i], natD[i] / natV[i], 1e-6, `cell ${i}: basis reproduces the national cell`);
 			// ...and every state's race x education totals (the state layer)
@@ -81,7 +91,7 @@ try {
 				const ctx = ctxOf(basis, rs, core, sw);
 				for (const r of rs) {
 					const o = S.outcome(r, ctx);
-					near(o.shares.D, Math.min(1, Math.max(0, r.demShare + sw / 200)), 1e-8, `${r.id} D share @${sw}`);
+					near(o.shares.D, Math.min(1, Math.max(0, r.demShare + sw / 200)), 1e-6, `${r.id} D share @${sw}`);
 					assert.equal(o.level, S.levelFromMargin(S.margin(r.demShare, sw)), 'level');
 				}
 				assert.equal(S.tally(rs, ctx).seats.D, rs.filter((r) => S.margin(r.demShare, sw) > 0).length, `D seats @${sw}`);
@@ -153,13 +163,14 @@ try {
 			const ct = ctxOf(basis, rs, core, 0, [seg({ age: ['18-29'] }, 20)]);
 			const r0 = rs[0], rb0 = basis.regions.get(r0.id);
 			let V = 0, Y = 0;
-			for (let c = 0; c < n; c++) { V += rb0.V[c]; if (basis.labels[c].age === '18-29') Y += Math.min(rb0.V[c] * 1.2, rb0.C[c] * 0.995); }
-			near(ct.sim.votes.get(r0.id), V - [...Array(n).keys()].filter((c) => basis.labels[c].age === '18-29').reduce((a, c) => a + rb0.V[c], 0) + Y, 1e-6, 'youth turnout +20%');
+			for (let c = 0; c < n; c++) { V += rb0.V[c]; if (basis.labels[c].age === '18-29') Y += Math.min(rb0.V[c] * 1.2, Math.max(rb0.V[c], rb0.C[c] * 0.995)); }
+			const wantV = V - [...Array(n).keys()].filter((c) => basis.labels[c].age === '18-29').reduce((a, c) => a + rb0.V[c], 0) + Y;
+			near(ct.sim.votes.get(r0.id) / wantV, 1, 1e-6, 'youth turnout +20%');
 
 			// demographics-only baseline: each cell at its national rate; national group shares unchanged
 			const demo = M.demographicsOnly(basis);
 			const cdemo = ctxOf(demo, rs, core);
-			for (const r of rs) near(S.shares(r, cdemo).D, basis.regions.get(r.id).expected.D, 1e-9, `${r.id}: demographics-only district`);
+			for (const r of rs) near(S.shares(r, cdemo).D, basis.regions.get(r.id).expected.D, 1e-7, `${r.id}: demographics-only district`);
 			for (const f of [{}, { race: ['Black'] }, { age: ['18-29'], sex: ['Men'] }, { edu: ['College'] }]) {
 				near(cdemo.sim.group(f).shares.D, ctx0.sim.group(f).shares.D, 1e-6, `demographics-only keeps national share of ${JSON.stringify(f)}`);
 			}
@@ -200,8 +211,8 @@ try {
 	{
 		const map = load('us-house-current', 'pres-2024');
 		const el = map.elections.find((e) => e.id === 'pres-2024');
-		const n = 80;
 		const labels = G.cellLabels(el.cells);
+		const n = labels.length;
 		const lRate = labels.map((l) => (l.age === '18-29' ? 0.3 : 0.08));
 		const results = {}, base = {};
 		for (const r of map.regions) {

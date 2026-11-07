@@ -60,7 +60,7 @@ export const SWING_LABELS = [-20, -10, -5, 0, 5, 10, 20];
 /** slider limits: (older links') vote swing in margin points, turnout change in %, appeal in points */
 export const DEMO_LIMITS = { vote: 30, turnout: 50, appeal: 50 };
 /** tab names for the cell dimensions written by pipeline/cells.py */
-export const DEMO_DIM_LABELS: Record<string, string> = { age: 'Age', race: 'Race', edu: 'Education', sex: 'Gender' };
+export const DEMO_DIM_LABELS: Record<string, string> = { age: 'Age', race: 'Race', edu: 'Education', sex: 'Gender', place: 'Place' };
 
 // ---------- map view ----------
 export const MAP_MAX_ZOOM = 40;

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { BASELINE_VARIANTS, type BaselineVariant } from './model';
 	import type { Election } from './types';
 
 	interface Props {
@@ -6,8 +7,8 @@
 		currentId: string;
 		elections: Election[];
 		election: string;
-		/** baseline without district residuals: every voter group votes at its national rate */
-		demoOnly: boolean;
+		/** which version of the election to start from (see model.ts) */
+		variant: BaselineVariant;
 		groups: string[];
 		focusGroup: string | null;
 		loading: boolean;
@@ -17,7 +18,7 @@
 		height?: number;
 	}
 	let {
-		maps, currentId, elections, election = $bindable(), demoOnly = $bindable(), groups, focusGroup = $bindable(),
+		maps, currentId, elections, election = $bindable(), variant = $bindable(), groups, focusGroup = $bindable(),
 		loading, onselectmap, onimport, height = $bindable()
 	}: Props = $props();
 </script>
@@ -32,16 +33,20 @@
 	{#if elections.length}
 		<label class="pick">Baseline
 			<select
-				value={demoOnly ? `${election}|demo` : election}
+				value={variant === 'real' ? election : `${election}|${variant}`}
 				onchange={(e) => {
-					const [id, demo] = e.currentTarget.value.split('|');
+					const [id, v] = e.currentTarget.value.split('|');
 					election = id;
-					demoOnly = demo === 'demo';
+					variant = (v as BaselineVariant) || 'real';
 				}}
 			>
 				{#each elections as e (e.id)}
 					<option value={e.id}>{e.label}</option>
-					{#if e.cells}<option value="{e.id}|demo">{e.label}, demographics only</option>{/if}
+					{#if e.cells}
+						{#each BASELINE_VARIANTS.filter((x) => x.id !== 'real') as x (x.id)}
+							<option value="{e.id}|{x.id}" title={x.hint}>{e.label}, {x.label}</option>
+						{/each}
+					{/if}
 				{/each}
 			</select>
 		</label>

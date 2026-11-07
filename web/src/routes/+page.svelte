@@ -1,6 +1,6 @@
 <script lang="ts">
 	import '../app.css';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import AboutPanel from '#lib/AboutPanel.svelte';
 	import CompareTable from '#lib/CompareTable.svelte';
 	import DemographicPanel from '#lib/DemographicPanel.svelte';
@@ -8,6 +8,7 @@
 	import ImportDialog from '#lib/ImportDialog.svelte';
 	import Legend from '#lib/Legend.svelte';
 	import MapView from '#lib/MapView.svelte';
+	import ModelFit from '#lib/ModelFit.svelte';
 	import PartyPanel from '#lib/PartyPanel.svelte';
 	import SeatSummary from '#lib/SeatSummary.svelte';
 	import SeatSystemPicker from '#lib/SeatSystemPicker.svelte';
@@ -22,7 +23,7 @@
 	} from '#lib/config.ts';
 	import { describe, emptySwing, filterKey, isActive, sanitizeSwing, type GroupOption } from '#lib/demographics.ts';
 	import { loadPack, withElection } from '#lib/loader.ts';
-	import { demographicsOnly, fitAppeal, fitBasis, residualPoints, twoPartyD, type Basis, type Scenario } from '#lib/model.ts';
+	import { BASELINE_VARIANTS, baselineFor, fitAppeal, fitBasis, residualPoints, twoPartyD, type Basis, type BaselineVariant, type Scenario } from '#lib/model.ts';
 	import { coreParties, sanitizeParties } from '#lib/parties.ts';
 	import { outcomeFill, residualFill } from '#lib/shading.ts';
 	import { buildContext, FPTP, outcome, tally, type SeatSystem } from '#lib/sim.ts';
@@ -34,8 +35,8 @@
 	let loaded = $state.raw<Record<string, LoadedMap>>({});
 	let currentId = $state('');
 	let election = $state(DEFAULT_ELECTION);
-	/** baseline without district residuals (see model.demographicsOnly) */
-	let demoOnly = $state(false);
+	/** which version of the election to start from: real, model only, demographics only */
+	let variant = $state<BaselineVariant>('real');
 	let swing = $state(0);
 	/** per-group vote/turnout changes (Voter groups panel) */
 	let demoSwing = $state(emptySwing());
@@ -56,25 +57,70 @@
 	// ---------- derived ----------
 	/** every map with region results from the selected election */
 	let electionMaps = $derived(Object.fromEntries(Object.entries(loaded).map(([id, m]) => [id, withElection(m, election)])));
-	/** the fitted vote model per map: national cell matrix + district residuals (model.ts) */
+	/** fitted vote models (model.fitBasis) by "map|election". Fitting takes most of a second per
+	 *  map, so it runs in a worker (fit.worker.ts); the main thread fits only if workers fail. */
+	let fitCache = $state.raw<Record<string, Basis>>({});
+	let fitsPending = $state(0);
+	let fitter: Worker | null | undefined;
+	const pendingKeys = new Set<string>();
+	function requestFit(id: string, m: LoadedMap, eid: string) {
+		const key = `${id}|${eid}`;
+		if (fitCache[key] || pendingKeys.has(key)) return;
+		const cells = m.elections.find((e) => e.id === eid)?.cells;
+		const done = (basis: Basis) => {
+			pendingKeys.delete(key);
+			fitsPending = pendingKeys.size;
+			fitCache = { ...fitCache, [key]: basis };
+		};
+		if (fitter === undefined) {
+			try {
+				fitter = new Worker(new URL('../lib/fit.worker.ts', import.meta.url), { type: 'module' });
+				fitter.onmessage = (e) => {
+					const { key: k, basis, error: err } = e.data;
+					pendingKeys.delete(k);
+					fitsPending = pendingKeys.size;
+					if (err) error = `Could not fit the vote model for ${k.split('|')[0]}: ${err}`;
+					else fitCache = { ...fitCache, [k]: basis };
+				};
+			} catch {
+				fitter = null;
+			}
+		}
+		pendingKeys.add(key);
+		fitsPending = pendingKeys.size;
+		if (fitter) {
+			fitter.postMessage({ key, regions: m.regions.map(({ feature, ...r }) => r), cells, local: m.local });
+		} else {
+			done(fitBasis(m.regions, cells, m.local));
+		}
+	}
+	$effect(() => {
+		const eid = election;
+		for (const [id, m] of Object.entries(electionMaps)) untrack(() => requestFit(id, m, eid));
+	});
+	/** the fitted vote model per map: national cell matrix + state patterns + district residuals */
 	let fitted = $derived(
 		Object.fromEntries(
-			Object.entries(electionMaps).map(([id, m]) => [id, fitBasis(m.regions, m.elections.find((e) => e.id === election)?.cells)])
+			Object.keys(electionMaps).flatMap((id) => {
+				const b = fitCache[`${id}|${election}`];
+				return b ? [[id, b]] : [];
+			})
 		) as Record<string, Basis>
 	);
 	const hasCellsFor = (id: string) => !!loaded[id]?.elections.find((e) => e.id === election)?.cells;
 	/** the baseline the simulation starts from: the real election, or demographics only */
 	let bases = $derived(
 		Object.fromEntries(
-			Object.entries(fitted).map(([id, b]) => [id, demoOnly && hasCellsFor(id) ? demographicsOnly(b) : b])
+			Object.entries(fitted).map(([id, b]) => [id, hasCellsFor(id) ? baselineFor(b, variant) : b])
 		) as Record<string, Basis>
 	);
 	/** maps whose region baselines (demShare) are the selected baseline */
 	let maps = $derived(
 		Object.fromEntries(
 			Object.entries(electionMaps).map(([id, m]) => {
-				if (!demoOnly || !hasCellsFor(id)) return [id, m];
+				if (variant === 'real' || !hasCellsFor(id)) return [id, m];
 				const b = bases[id];
+				if (!b) return [id, m];
 				return [id, { ...m, regions: m.regions.map((r) => {
 					const rb = b.regions.get(r.id);
 					return rb ? { ...r, demShare: twoPartyD(rb.actual) } : r;
@@ -83,9 +129,21 @@
 		) as Record<string, LoadedMap>
 	);
 	let scenario = $derived<Scenario>({ swing, segments: demoSwing.segments, parties });
+	/** the scenario for the Compare maps table: it re-runs every map, so it follows the
+	 *  scenario only once a slider has been still for a moment (not on every drag step) */
+	let settled = $state.raw<Scenario | null>(null);
+	$effect(() => {
+		const snap = $state.snapshot(scenario) as Scenario;
+		const t = setTimeout(() => (settled = snap), untrack(() => settled) ? 250 : 0);
+		return () => clearTimeout(t);
+	});
 	let map = $derived(maps[currentId]);
 	let electionInfo = $derived(map?.elections.find((e) => e.id === election));
-	let baselineLabel = $derived(electionInfo ? `${electionInfo.label}${demoOnly && electionInfo.cells ? ' (demographics only)' : ''}` : 'Baseline');
+	let baselineLabel = $derived(
+		electionInfo
+			? `${electionInfo.label}${variant !== 'real' && electionInfo.cells ? ` (${BASELINE_VARIANTS.find((x) => x.id === variant)?.label})` : ''}`
+			: 'Baseline'
+	);
 	let byId = $derived(Object.fromEntries(parties.map((p) => [p.id, p])) as Record<string, Party>);
 	let ov = $derived(overrides[currentId] ?? {});
 	let ctx = $derived(map ? buildContext(bases[currentId], map.regions, scenario, ov) : null);
@@ -163,7 +221,7 @@
 	function encodeHash(): string {
 		const o = Object.entries(ov).map(([k, v]) => `${k}:${v.p}${v.l}`).join(',');
 		const p = new URLSearchParams({ map: currentId, election, swing: String(swing) });
-		if (demoOnly) p.set('baseline', 'demographics');
+		if (variant !== 'real') p.set('baseline', variant);
 		if (o) p.set('o', o);
 		if (focusGroup) p.set('focus', focusGroup);
 		if (seatSystem.kind === 'mmp') {
@@ -190,7 +248,8 @@
 		if (e && /^[a-z0-9-]{1,40}$/.test(e)) election = e;
 		const sw = Number(p.get('swing'));
 		if (Number.isFinite(sw) && Math.abs(sw) <= SWING_MAX) swing = sw;
-		demoOnly = p.get('baseline') === 'demographics';
+		const bv = p.get('baseline');
+		variant = BASELINE_VARIANTS.some((x) => x.id === bv) ? (bv as BaselineVariant) : 'real';
 		const id = p.get('map');
 		const o: Record<string, Override> = {};
 		for (const part of (p.get('o') ?? '').split(',').filter(Boolean)) {
@@ -252,7 +311,11 @@
 				for (const v of votes) if (d) d.appeals = [...d.appeals, { filter: v.filter, points: v.vote / 2 }];
 			} catch { /* ignore */ }
 		}
-		fitLegacyTargets();
+	});
+
+	// older links stored share targets: fit them once the current map's model is ready
+	$effect(() => {
+		if (bases[currentId] && map && parties.some((p) => p.appeals.some((a) => a.target !== undefined))) untrack(fitLegacyTargets);
 	});
 
 	/** older links stored share targets: fit each one to an appeal, once */
@@ -315,10 +378,10 @@
 	{currentId}
 	elections={map?.elections ?? []}
 	bind:election
-	bind:demoOnly
+	bind:variant
 	{groups}
 	bind:focusGroup
-	{loading}
+	loading={loading || fitsPending > 0}
 	onselectmap={selectMap}
 	onimport={() => (importing = true)}
 	bind:height={headerH}
@@ -368,7 +431,12 @@
 				<VoteMatrix sim={ctx.sim} {parties} cells={electionInfo.cells} custom={audienceOptions.filter((a) => a.custom)} {baselineLabel} />
 			{/if}
 
-			<CompareTable {maps} {bases} {currentId} {scenario} {overrides} {seatSystem} />
+			{#if electionInfo?.cells && fitted[currentId]}
+				<h3>What explains each district</h3>
+				<ModelFit fit={fitted[currentId].fit} {parties} />
+			{/if}
+
+			{#if settled}<CompareTable {maps} {bases} {currentId} scenario={settled} {overrides} {seatSystem} />{/if}
 
 			{#if focusGroup && groupTally}
 				<StatePanel group={focusGroup} tally={groupTally} {parties} {report} onback={() => (focusGroup = null)} />
