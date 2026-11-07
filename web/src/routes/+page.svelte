@@ -10,6 +10,7 @@
 	import MapView from '#lib/MapView.svelte';
 	import PartyPanel from '#lib/PartyPanel.svelte';
 	import SeatSummary from '#lib/SeatSummary.svelte';
+	import SeatSystemPicker from '#lib/SeatSystemPicker.svelte';
 	import ShadingPicker from '#lib/ShadingPicker.svelte';
 	import StatePanel from '#lib/StatePanel.svelte';
 	import SwingSlider from '#lib/SwingSlider.svelte';
@@ -21,10 +22,10 @@
 	} from '#lib/config.ts';
 	import { describe, emptySwing, filterKey, isActive, sanitizeSwing, type GroupOption } from '#lib/demographics.ts';
 	import { loadPack, withElection } from '#lib/loader.ts';
-	import { demographicsOnly, fitBasis, residualPoints, twoPartyD, type Basis, type Scenario } from '#lib/model.ts';
+	import { demographicsOnly, fitAppeal, fitBasis, residualPoints, twoPartyD, type Basis, type Scenario } from '#lib/model.ts';
 	import { coreParties, sanitizeParties } from '#lib/parties.ts';
 	import { outcomeFill, residualFill } from '#lib/shading.ts';
-	import { buildContext, outcome, tally } from '#lib/sim.ts';
+	import { buildContext, FPTP, outcome, tally, type SeatSystem } from '#lib/sim.ts';
 	import type { Level, LoadedMap, Override, Party, Region, StateReport } from '#lib/types.ts';
 
 	// ---------- app state ----------
@@ -39,6 +40,8 @@
 	/** per-group vote/turnout changes (Voter groups panel) */
 	let demoSwing = $state(emptySwing());
 	let parties = $state<Party[]>(coreParties());
+	/** how seats are assigned: FPTP, or mixed-member proportional */
+	let seatSystem = $state<SeatSystem>(FPTP);
 	/** manual ratings per map id, then region id */
 	let overrides = $state<Record<string, Record<string, Override>>>({});
 	let focusGroup = $state<string | null>(null);
@@ -86,7 +89,7 @@
 	let byId = $derived(Object.fromEntries(parties.map((p) => [p.id, p])) as Record<string, Party>);
 	let ov = $derived(overrides[currentId] ?? {});
 	let ctx = $derived(map ? buildContext(bases[currentId], map.regions, scenario, ov) : null);
-	let t = $derived(map && ctx ? tally(map.regions, ctx) : null);
+	let t = $derived(map && ctx ? tally(map.regions, ctx, seatSystem) : null);
 	let groups = $derived(map ? [...new Set(map.regions.map((r) => r.group).filter(Boolean))].sort() : []);
 	let hasBaseline = $derived(!!map?.regions.some((r) => r.demShare !== null));
 	let groupTally = $derived(
@@ -163,6 +166,10 @@
 		if (demoOnly) p.set('baseline', 'demographics');
 		if (o) p.set('o', o);
 		if (focusGroup) p.set('focus', focusGroup);
+		if (seatSystem.kind === 'mmp') {
+			const m = seatSystem;
+			p.set('seats', `mmp:${m.listSeats}:${m.threshold}:${m.waiver}:${m.overhang}`);
+		}
 		if (parties.length > 2 || parties.some((x) => x.appeals.length)) p.set('parties', JSON.stringify(parties.map(({ core, ...rest }) => rest)));
 		if (isActive(demoSwing)) p.set('groups', JSON.stringify(demoSwing));
 		return p.toString();
@@ -193,6 +200,13 @@
 		}
 		if (id) overrides[id] = o;
 		focusGroup = p.get('focus');
+		const seats = (p.get('seats') ?? '').match(/^mmp:(\d{1,3}):(\d{1,2}(?:\.\d)?):(\d{1,2}):(keep|level)$/);
+		if (seats) {
+			seatSystem = {
+				kind: 'mmp', listSeats: Math.min(300, Number(seats[1])), threshold: Math.min(20, Number(seats[2])),
+				waiver: Number(seats[3]), overhang: seats[4] as 'keep' | 'level'
+			};
+		}
 		pendingGroups = p.get('groups');
 		try {
 			const ps = sanitizeParties(JSON.parse(p.get('parties') ?? 'null'));
@@ -230,9 +244,42 @@
 		if (first) await selectMap(first);
 		const dims = loaded[currentId]?.elections.find((e) => e.cells)?.cells?.dims;
 		if (pendingGroups && dims) {
-			try { demoSwing = sanitizeSwing(JSON.parse(pendingGroups), dims, DEMO_LIMITS); } catch { /* ignore */ }
+			try {
+				const { swing: sw, votes } = sanitizeSwing(JSON.parse(pendingGroups), dims, DEMO_LIMITS);
+				demoSwing = sw;
+				// older links: a D-vs-R vote swing of m margin points ≈ a D appeal of m/2 points
+				const d = parties.find((x) => x.id === 'D');
+				for (const v of votes) if (d) d.appeals = [...d.appeals, { filter: v.filter, points: v.vote / 2 }];
+			} catch { /* ignore */ }
 		}
+		fitLegacyTargets();
 	});
+
+	/** older links stored share targets: fit each one to an appeal, once */
+	function fitLegacyTargets() {
+		const b = bases[currentId];
+		if (!b || !map) return;
+		for (const p of parties) {
+			for (const a of p.appeals) {
+				if (a.target === undefined) continue;
+				const f = $state.snapshot(a.filter);
+				a.points = fitAppeal(b, map.regions, $state.snapshot(scenario), p.id, f, a.target / 100).points;
+				delete a.target;
+			}
+		}
+	}
+
+	/** "fit to…" from the Voter groups panel */
+	function fit(partyId: string, filter: Record<string, string[]>, target: number): boolean {
+		const b = bases[currentId];
+		const p = parties.find((x) => x.id === partyId);
+		if (!b || !map || !p) return false;
+		const r = fitAppeal(b, map.regions, $state.snapshot(scenario), partyId, filter, target);
+		if (!r.reached) return false;
+		const key = filterKey(filter);
+		p.appeals = [...p.appeals.filter((a) => filterKey(a.filter) !== key), ...(r.points ? [{ filter: structuredClone(filter), points: r.points }] : [])];
+		return true;
+	}
 
 	// ---------- painting ----------
 	function setOverride(id: string, v: Override | null) {
@@ -301,26 +348,27 @@
 	<aside>
 		{#if t && map}
 			<SeatSummary tally={t} {parties} />
+			<SeatSystemPicker bind:system={seatSystem} />
 			{#if hasBaseline}
 				<SwingSlider bind:swing baseline={baselineLabel} />
 			{/if}
 			{#if electionInfo?.cells && hasBaseline}
 				<h3>Voter groups</h3>
-				{#if ctx?.sim}<DemographicPanel sim={ctx.sim} cells={electionInfo.cells} bind:swing={demoSwing} />{/if}
+				{#if ctx?.sim}<DemographicPanel sim={ctx.sim} cells={electionInfo.cells} bind:swing={demoSwing} bind:parties onfit={fit} />{/if}
 			{/if}
 			{#if Object.keys(ov).length}
 				<button type="button" class="link" onclick={() => (overrides[currentId] = {})}>clear {Object.keys(ov).length} manual ratings</button>
 			{/if}
 
 			<h3>Parties</h3>
-			<PartyPanel bind:parties {groups} audiences={audienceOptions} sim={ctx?.sim ?? null} />
+			<PartyPanel bind:parties {groups} sim={ctx?.sim ?? null} />
 
 			{#if electionInfo?.cells && ctx?.sim}
 				<h3>Vote by group</h3>
 				<VoteMatrix sim={ctx.sim} {parties} cells={electionInfo.cells} custom={audienceOptions.filter((a) => a.custom)} {baselineLabel} />
 			{/if}
 
-			<CompareTable {maps} {bases} {currentId} {scenario} {overrides} />
+			<CompareTable {maps} {bases} {currentId} {scenario} {overrides} {seatSystem} />
 
 			{#if focusGroup && groupTally}
 				<StatePanel group={focusGroup} tally={groupTally} {parties} {report} onback={() => (focusGroup = null)} />

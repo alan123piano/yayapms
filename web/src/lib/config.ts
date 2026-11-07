@@ -12,8 +12,8 @@ export const DEFAULT_ELECTION = 'pres-2020';
 
 // ---------- parties ----------
 export const MAX_PARTIES = 8;
-/** target voter groups per party */
-export const MAX_APPEALS = 6;
+/** voter groups a party can have an appeal in (single groups + custom groups + everyone) */
+export const MAX_APPEALS = 40;
 export const DEFAULT_PARTIES: Party[] = [
 	{ id: 'D', name: 'Democratic', color: '#2f6fdd', core: true, share: 0, fromD: 100, states: [], appeals: [] },
 	{ id: 'R', name: 'Republican', color: '#d8333a', core: true, share: 0, fromD: 0, states: [], appeals: [] }
@@ -57,8 +57,8 @@ export const SWING_STOPS = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8, 9, 10, 1
 export const SWING_LABELS = [-20, -10, -5, 0, 5, 10, 20];
 
 // ---------- voter groups (demographic swings) ----------
-/** slider limits: vote swing in margin points, turnout change in % */
-export const DEMO_LIMITS = { vote: 30, turnout: 50 };
+/** slider limits: (older links') vote swing in margin points, turnout change in %, appeal in points */
+export const DEMO_LIMITS = { vote: 30, turnout: 50, appeal: 50 };
 /** tab names for the cell dimensions written by pipeline/cells.py */
 export const DEMO_DIM_LABELS: Record<string, string> = { age: 'Age', race: 'Race', edu: 'Education', sex: 'Gender' };
 

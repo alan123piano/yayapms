@@ -5,9 +5,9 @@ import type { CellData } from './types';
  * into cells (age x race x edu x sex).
  * A segment selects cells with a filter (per dimension, the allowed groups; a dimension left
  * out matches everyone), e.g. {age: ['18-29'], sex: ['Men']} = young men. Every segment that
- * matches a cell applies to it, and they stack: vote swings add, turnout changes multiply.
- *   vote:    margin points toward D (+) or R (-) for the segment's voters
+ * matches a cell applies to it, and turnout changes multiply:
  *   turnout: % change in how many of them vote (capped at 99.5% of citizen voting-age pop)
+ * How a group votes is set by each party's appeals (types.Appeal), not here.
  * Results change *relative to* the region's real result, so with no swings nothing moves.
  */
 export type Filter = Record<string, string[]>;
@@ -16,7 +16,6 @@ export interface Segment {
 	/** single-group segments from the dimension tabs use "dim=group"; custom ones "c1", "c2", ... */
 	id: string;
 	filter: Filter;
-	vote: number;
 	turnout: number;
 	custom?: boolean;
 }
@@ -42,7 +41,7 @@ export function emptySwing(): DemoSwing {
 }
 
 export function isActive(s: DemoSwing): boolean {
-	return s.segments.some((g) => g.vote !== 0 || g.turnout !== 0);
+	return s.segments.some((g) => g.turnout !== 0);
 }
 
 /** Canonical key for a filter (order-independent), e.g. "age=18-29&sex=Men". */
@@ -76,20 +75,15 @@ export function cellLabels(c: CellData): Record<string, string>[] {
 	return out;
 }
 
-export type Effect = { shift: number; mult: number };
+export type Effect = { mult: number };
 
-/** per-cell D-share shift (share units) and turnout multiplier for a swing setting */
+/** per-cell turnout multiplier for a setting */
 export function cellEffects(labels: Record<string, string>[], s: DemoSwing): Effect[] {
-	const live = s.segments.filter((g) => g.vote !== 0 || g.turnout !== 0);
+	const live = s.segments.filter((g) => g.turnout !== 0);
 	return labels.map((l) => {
-		let shift = 0;
 		let mult = 1;
-		for (const g of live) {
-			if (!matches(l, g.filter)) continue;
-			shift += g.vote;
-			mult *= 1 + g.turnout / 100;
-		}
-		return { shift: shift / 200, mult };
+		for (const g of live) if (matches(l, g.filter)) mult *= 1 + g.turnout / 100;
+		return { mult };
 	});
 }
 
@@ -108,18 +102,27 @@ export function sanitizeFilter(raw: unknown, dims: Record<string, string[]>): Fi
 	return out;
 }
 
-/** Validate an untrusted swing (URL hash) against known dimensions. */
-export function sanitizeSwing(raw: unknown, dims: Record<string, string[]>, limits: { vote: number; turnout: number }): DemoSwing {
+/**
+ * Validate an untrusted voter-group setting (URL hash) against known dimensions. Older links
+ * also carried a D-vs-R vote swing per group (margin points); those come back in `votes` for
+ * the caller to turn into appeals.
+ */
+export function sanitizeSwing(
+	raw: unknown, dims: Record<string, string[]>, limits: { vote: number; turnout: number }
+): { swing: DemoSwing; votes: { filter: Filter; vote: number }[] } {
 	const out = emptySwing();
+	const votes: { filter: Filter; vote: number }[] = [];
 	const segs = (raw as { segments?: unknown } | null)?.segments;
-	if (!Array.isArray(segs)) return out;
+	if (!Array.isArray(segs)) return { swing: out, votes };
 	const clamp = (v: unknown, lim: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(-lim, Math.min(lim, v)) : 0);
 	for (const g of segs.slice(0, 200)) {
 		if (!g || typeof g !== 'object') continue;
 		const { id, filter, vote, turnout, custom } = g as Record<string, unknown>;
 		const f = sanitizeFilter(filter, dims);
 		if (typeof id !== 'string' || !SEG_ID.test(id) || !f || out.segments.some((x) => x.id === id)) continue;
-		out.segments.push({ id, filter: f, vote: clamp(vote, limits.vote), turnout: clamp(turnout, limits.turnout), custom: custom === true || undefined });
+		out.segments.push({ id, filter: f, turnout: clamp(turnout, limits.turnout), custom: custom === true || undefined });
+		const v = clamp(vote, limits.vote);
+		if (v) votes.push({ filter: f, vote: v });
 	}
-	return out;
+	return { swing: out, votes };
 }

@@ -24,7 +24,7 @@
 	let folded = $state<string[]>([]);
 	let by = $derived(cells.order.filter((d) => !folded.includes(d)));
 	let cols = $derived(spectrumOrder(parties.filter(isLive)));
-	let targeted = $derived(new Set(parties.flatMap((p) => p.appeals.map((a) => `${p.id}|${filterKey(a.filter)}`))));
+	let targeted = $derived(new Set(parties.flatMap((p) => p.appeals.filter((a) => a.points).map((a) => `${p.id}|${filterKey(a.filter)}`))));
 
 	interface Row { key: string; groups: Record<string, string>; g: GroupResult }
 	let rows = $derived.by((): Row[] => {
@@ -147,7 +147,7 @@
 	</div>
 	<p class="hint">
 		% of each group's votes won by each party, after every setting in the sidebar. Underlined: a
-		party's target group.
+		group the party has an appeal in.
 	</p>
 	<p class="hint">
 		Where the numbers come from: who lives in each district (Census ACS) is estimated per tract. How

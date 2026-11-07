@@ -25,7 +25,15 @@
 <p class="status">{majorityStatus(t, parties)}</p>
 <ul>
 	{#each ranked as { p, n } (p.id)}
-		<li><span class="swatch" style:background={p.color}></span>{p.name}<b>{n}</b></li>
+		<li>
+			<span class="swatch" style:background={p.color}></span>{p.name}
+			{#if t.mmp}
+				<span class="muted small split" title="districts + list seats; national vote">
+					{t.mmp.districts[p.id] ?? 0} + {t.mmp.list[p.id] ?? 0} · {((t.mmp.vote[p.id] ?? 0) * 100).toFixed(1)}%{#if !t.mmp.eligible.includes(p.id)} · under threshold{/if}
+				</span>
+			{/if}
+			<b>{n}</b>
+		</li>
 	{/each}
 	{#if t.unrated}
 		<li title="No result for this election and no manual rating">
@@ -34,7 +42,9 @@
 	{/if}
 	<li class="total">Total<b>{t.total}</b></li>
 </ul>
-<p class="muted small">{majority} for a majority</p>
+<p class="muted small">
+	{majority} for a majority{#if t.mmp} · districts + list seats{#if t.mmp.extra > 0}; {t.mmp.extra} overhang/levelling seats{/if}{/if}
+</p>
 
 <style>
 	.seatbar {
@@ -55,6 +65,14 @@
 		width: 2px;
 		background: var(--fg);
 		transform: translateX(-1px);
+	}
+	.split {
+		margin-left: auto;
+		margin-right: 8px;
+	}
+	.split + b {
+		margin-left: 0;
+		font-variant-numeric: tabular-nums;
 	}
 	.status {
 		font-weight: 600;

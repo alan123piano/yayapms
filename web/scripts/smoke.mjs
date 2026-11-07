@@ -79,61 +79,65 @@ try {
 			const g0 = ctx0.sim.group({ age: ['18-29'] });
 			near(g0.shares.D, g0.before.shares.D, 1e-6, 'matrix = real data with no edits');
 
-			// 3. multiparty preset: shares sum to 1, targets hit, draws hit, regional stays regional
+			// 3. multiparty preset: shares sum to 1, regional stays regional
 			const parties = P.presetParties(core);
 			const ctx = ctxOf(basis, rs, parties);
-			assert.ok(ctx.sim.converged, 'preset converges');
-			let v = 0; const acc = {}; let vTX = 0, accTX = 0;
 			for (const r of rs) {
 				const sh = S.shares(r, ctx);
 				near(Object.values(sh).reduce((a, b) => a + b, 0), 1, 1e-9, 'shares sum');
 				assert.ok(Object.values(sh).every((x) => x >= 0), 'non-negative');
-				const w = ctx.sim.votes.get(r.id);
 				if (r.group !== 'TX') assert.equal(sh.p4 ?? 0, 0, 'regional party outside TX');
-				else { vTX += w; accTX += w * sh.p4; }
-				v += w;
-				for (const [k, x] of Object.entries(sh)) acc[k] = (acc[k] ?? 0) + w * x;
 			}
-			for (const q of parties.filter((q) => !q.core && !q.states.length)) near(acc[q.id] / v, q.share / 100, 1e-5, `${q.name} national share`);
-			near(accTX / vTX, 0.22, 1e-5, 'Lone Star TX share');
 			const tm = S.tally(rs, ctx);
+			// a new party with neutral pulls and no appeals wins exactly its base share everywhere
+			const flat = ctxOf(basis, rs, [...core, party({ share: 12, fromD: 50 })]);
+			for (const r of rs.slice(0, 20)) near(S.shares(r, flat).p1, 0.12, 1e-9, `${r.id}: base share exact`);
+			// the example parties with neutral pulls: every base share exact in every district it runs in
+			const neutral = parties.map((p) => (p.core ? p : { ...p, fromD: 50 }));
+			const cn = ctxOf(basis, rs, neutral);
+			for (const r of rs) for (const q of neutral.filter((q) => !q.core)) {
+				const runsHere = !q.states.length || q.states.includes(r.group);
+				near(S.shares(r, cn)[q.id] ?? 0, runsHere ? q.share / 100 : 0, 1e-9, `${r.id}: ${q.name} base share exact`);
+			}
+			// two national parties with neutral pulls: each exactly its base share
+			const two = ctxOf(basis, rs, [...core, party({ share: 10 }), party({ id: 'p2', share: 20 })]);
+			near(two.sim.group({}).shares.p1, 0.10, 1e-9, 'two new parties: 10%');
+			near(two.sim.group({}).shares.p2, 0.20, 1e-9, 'two new parties: 20%');
+			// pulls: 100% from D takes only D voters
+			const pullD = ctxOf(basis, rs, [...core, party({ share: 10, fromD: 100 })]);
+			near(pullD.sim.group({}).shares.R, ctx0.sim.group({}).shares.R, 1e-9, 'pulling only from D leaves R untouched');
 
-			// 4. a party with several target groups (overlapping) and a base level elsewhere
-			const multi = party({ share: 3, fromD: 70, appeals: [{ filter: { age: ['18-29'] }, share: 30 }, { filter: { race: ['Hispanic'] }, share: 20 }] });
-			const cm = ctxOf(basis, rs, [...core, multi]);
-			assert.ok(cm.sim.converged, 'multi-appeal converges');
-			near(cm.sim.group({ age: ['18-29'] }).shares.p1, 0.30, 1e-5, 'wins 30% of 18-29');
-			near(cm.sim.group({ race: ['Hispanic'] }).shares.p1, 0.20, 1e-5, 'wins 20% of Hispanics');
-			near(cm.sim.group({ age: ['30-44', '45-64', '65+'], race: ['White', 'Black', 'Asian', 'Other'] }).shares.p1, 0.03, 1e-5, '3% of everyone else');
-			// group-only party: nothing outside its group
-			const youth = party({ appeals: [{ filter: { sex: ['Men'], age: ['18-29'] }, share: 25 }] });
-			const cy = ctxOf(basis, rs, [...core, youth]);
-			near(cy.sim.group({ sex: ['Men'], age: ['18-29'] }).shares.p1, 0.25, 1e-5, 'wins 25% of young men');
-			assert.ok(cy.sim.group({ sex: ['Women'] }).shares.p1 < 1e-9, 'nothing from women');
-			const cyt = ctxOf(basis, rs, [...core, { ...youth, states: ['TX'] }]);
-			assert.ok(rs.every((r) => r.group === 'TX' || !S.shares(r, cyt).p1), 'targeted party only where it runs');
+			// 4. appeals: points at the baseline, only the group's cells move, they add up
+			const app = (id, f, points) => core.map((p) => (p.id === id ? { ...p, appeals: [...p.appeals, { filter: f, points }] } : p));
+			const cd = ctxOf(basis, rs, app('D', { race: ['Hispanic'] }, 10));
+			const dh = (cd.sim.group({ race: ['Hispanic'] }).shares.D - ctx0.sim.group({ race: ['Hispanic'] }).shares.D) * 100;
+			assert.ok(dh > 7 && dh < 11, `D +10 among Hispanics moves them ~10 points (${dh.toFixed(2)})`);
+			for (const g of ['White', 'Black', 'Asian']) near(cd.sim.group({ race: [g] }).shares.D, ctx0.sim.group({ race: [g] }).shares.D, 1e-12, `${g} untouched`);
+			const ym = ctxOf(basis, rs, [...core.map((p) => (p.id === 'D' ? { ...p, appeals: [{ filter: { age: ['18-29'] }, points: 5 }, { filter: { sex: ['Men'] }, points: 5 }] } : p))]);
+			const both = ym.sim.group({ age: ['18-29'], sex: ['Men'] }).shares.D - ctx0.sim.group({ age: ['18-29'], sex: ['Men'] }).shares.D;
+			const one = ym.sim.group({ age: ['18-29'], sex: ['Women'] }).shares.D - ctx0.sim.group({ age: ['18-29'], sex: ['Women'] }).shares.D;
+			assert.ok(both > one * 1.5, 'young men get both appeals');
+			const tiny = ctxOf(basis, rs, app('D', { age: ['18-29'] }, 0.25));
+			const dt = (tiny.sim.group({ age: ['18-29'] }).shares.D - g0.shares.D) * 100;
+			assert.ok(dt > 0 && dt < 0.3, `a 0.25-point appeal moves young voters < 0.3 pts, no jump (${dt.toFixed(3)})`);
+			const cs = ctxOf(basis, rs, app('D', { age: ['18-29'] }, 5));
 
-			// 5. core appeal: D wins 75% of Hispanics (of all their votes)
-			const dApp = core.map((p) => (p.id === 'D' ? { ...p, appeals: [{ filter: { race: ['Hispanic'] }, share: 75 }] } : p));
-			const cd = ctxOf(basis, rs, dApp);
-			assert.ok(cd.sim.converged, 'core appeal converges');
-			near(cd.sim.group({ race: ['Hispanic'] }).shares.D, 0.75, 1e-5, 'D wins 75% of Hispanics');
-			near(cd.sim.group({ race: ['White'] }).shares.D, ctx0.sim.group({ race: ['White'] }).shares.D, 1e-12, 'other groups untouched');
-			// core appeal together with an extra party
-			const cdx = ctxOf(basis, rs, [...dApp, multi]);
-			near(cdx.sim.group({ race: ['Hispanic'] }).shares.D, 0.75, 1e-4, 'D appeal holds with a third party');
-			near(cdx.sim.group({ race: ['Hispanic'] }).shares.p1, 0.20, 1e-4, 'third-party appeal holds with a D appeal');
+			// 5. fit to a share: finds the appeal, any party
+			const sc0 = { swing: 0, segments: [], parties: core };
+			const f1 = M.fitAppeal(basis, rs, sc0, 'D', { race: ['Hispanic'] }, 0.6);
+			assert.ok(f1.reached, 'fit reached');
+			const cf = ctxOf(basis, rs, app('D', { race: ['Hispanic'] }, f1.points));
+			near(cf.sim.group({ race: ['Hispanic'] }).shares.D, 0.6, 0.002, `fit D to 60% of Hispanics (${f1.points} pts)`);
+			const yp = [...core, party({ share: 3, fromD: 60 })];
+			const f2 = M.fitAppeal(basis, rs, { ...sc0, parties: yp }, 'p1', { age: ['18-29'] }, 0.25);
+			const cy = ctxOf(basis, rs, yp.map((p) => (p.id === 'p1' ? { ...p, appeals: [{ filter: { age: ['18-29'] }, points: f2.points }] } : p)));
+			near(cy.sim.group({ age: ['18-29'] }).shares.p1, 0.25, 0.002, 'fit a new party to 25% of 18-29');
+			const txOnly = [...core, party({ share: 5, states: ['TX'] })];
+			assert.equal(M.fitAppeal(basis, rs, { ...sc0, parties: txOnly }, 'p1', { race: ['Black'] }, 0.5).reached, false, 'unreachable fit says so (a Texas party, half of Black voters nationally)');
 
-			// 6. voter-group edits: a youth swing moves only young voters; turnout scales voters
-			const seg = (f, vote, turnout = 0) => ({ id: 'c1', filter: f, vote, turnout });
-			const cs = ctxOf(basis, rs, core, 0, [seg({ age: ['18-29'] }, 10)]);
-			for (const g of ['30-44', '45-64', '65+']) near(cs.sim.group({ age: [g] }).shares.D, ctx0.sim.group({ age: [g] }).shares.D, 1e-12, `${g} untouched by youth swing`);
-			const dy = (cs.sim.group({ age: ['18-29'] }).shares.D - g0.shares.D) * 200;
-			assert.ok(dy > 7 && dy < 10.5, `youth +10 moves young voters ~10 margin points (${dy.toFixed(2)})`);
-			const tiny = ctxOf(basis, rs, core, 0, [seg({ age: ['18-29'] }, 0.5)]);
-			const dt = (tiny.sim.group({ age: ['18-29'] }).shares.D - g0.shares.D) * 200;
-			assert.ok(dt > 0 && dt < 0.6, `a 0.5-point swing moves young voters < 0.6 pts, no jump (${dt.toFixed(3)})`);
-			const ct = ctxOf(basis, rs, core, 0, [seg({ age: ['18-29'] }, 0, 20)]);
+			// 6. turnout scales voters
+			const seg = (f, turnout) => ({ id: 'c1', filter: f, turnout });
+			const ct = ctxOf(basis, rs, core, 0, [seg({ age: ['18-29'] }, 20)]);
 			const r0 = rs[0], rb0 = basis.regions.get(r0.id);
 			let V = 0, Y = 0;
 			for (let c = 0; c < n; c++) { V += rb0.V[c]; if (basis.labels[c].age === '18-29') Y += Math.min(rb0.V[c] * 1.2, rb0.C[c] * 0.995); }
@@ -149,11 +153,28 @@ try {
 			const tDemo = S.tally(rs, cdemo);
 			const demoPopular = cdemo.sim.group({}).shares.D;
 
+
+			// MMP: list seats make the house proportional among eligible parties
+			const mmp = (o) => ({ kind: 'mmp', listSeats: 100, threshold: 5, waiver: 1, overhang: 'level', ...o });
+			const tf = S.tally(rs, ctx0, S.FPTP);
+			assert.deepEqual(tf, S.tally(rs, ctx0), 'FPTP is the default');
+			const tl = S.tally(rs, ctx, mmp({}));
+			const elig = tl.mmp.eligible;
+			const house = elig.reduce((a, id) => a + tl.seats[id], 0);
+			const sl = S.sainteLague(Object.fromEntries(elig.map((id) => [id, tl.mmp.vote[id]])), house);
+			for (const id of elig) assert.equal(tl.seats[id], sl[id], `MMP level: ${id} proportional`);
+			for (const id of Object.keys(tl.seats)) assert.ok(tl.seats[id] >= tl.mmp.districts[id], 'keeps its districts');
+			assert.ok(tl.mmp.extra >= 0, 'levelling only adds seats');
+			const tk = S.tally(rs, ctx, mmp({ overhang: 'keep' }));
+			assert.equal(tk.total - tk.unrated, rs.length * 2 + tk.mmp.extra, 'keep: base house plus overhang only');
+			const th = S.tally(rs, ctxOf(basis, rs, [...core, party({ share: 3 })]), mmp({ threshold: 5, waiver: 0 }));
+			assert.equal(th.mmp.list.p1, 0, 'under the threshold: no list seats');
+
 			// residuals: vote-weighted mean 0
 			const res = rs.map((r) => M.residualPoints(basis.regions.get(r.id)));
 			console.log(`${id} ${eid}: fit ${fitMs.toFixed(0)}ms | D ${t0s.seats.D} R ${t0s.seats.R} | preset: ` +
 				Object.entries(tm.seats).map(([k, n]) => `${parties.find((q) => q.id === k).name} ${n}`).join(', ') +
-				` | youth +10 -> D ${S.tally(rs, cs).seats.D} | demographics only: D ${tDemo.seats.D} R ${tDemo.seats.R} (D ${(demoPopular * 100).toFixed(1)}%) | residual sd ${Math.sqrt(res.reduce((a, x) => a + x * x, 0) / res.length).toFixed(1)} pts`);
+				` | MMP: ${Object.entries(tl.seats).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(' ')} of ${tl.total} | D +5 among 18-29 -> D ${S.tally(rs, cs).seats.D} | demographics only: D ${tDemo.seats.D} R ${tDemo.seats.R} (D ${(demoPopular * 100).toFixed(1)}%) | residual sd ${Math.sqrt(res.reduce((a, x) => a + x * x, 0) / res.length).toFixed(1)} pts`);
 
 			// overrides: an override for an inactive party is ignored
 			assert.equal(S.outcome(r0, ctxOf(basis, rs, core, 0, [], { [r0.id]: { p: 'p2', l: 4 } })).manual, false);
@@ -191,11 +212,12 @@ try {
 			for (const q of ['D', 'L', 'R']) near(g.shares[q], g.before.shares[q], 1e-6, `3-party national ${q} among ${JSON.stringify(f)}`);
 		}
 		// appeals and extras work against any baseline party
-		const rApp = core.map((p) => (p.id === 'R' ? { ...p, appeals: [{ filter: { sex: ['Men'] }, share: 50 }] } : p));
-		const s3 = M.simulate(b3, regions, { swing: 2, segments: [], parties: [...rApp, party({ share: 5, fromD: 40 })] });
-		assert.ok(s3.converged, '3-party scenario converges');
-		near(s3.group({ sex: ['Men'] }).shares.R, 0.5, 1e-5, '3-party: R wins 50% of men');
-		near(s3.group({}).shares.p1, 0.05, 1e-5, '3-party: extra party 5%');
+		const sc3 = { swing: 0, segments: [], parties: [...core, party({ share: 5, fromD: 50 })] };
+		const fR = M.fitAppeal(b3, regions, sc3, 'R', { sex: ['Men'] }, 0.5);
+		const s3 = M.simulate(b3, regions, { ...sc3, parties: sc3.parties.map((p) => (p.id === 'R' ? { ...p, appeals: [{ filter: { sex: ['Men'] }, points: fR.points }] } : p)) });
+		near(s3.group({ sex: ['Men'] }).shares.R, 0.5, 0.002, '3-party: R fitted to 50% of men');
+		const s3b = M.simulate(b3, regions, sc3);
+		near(s3b.group({}).shares.p1, 0.05, 1e-9, '3-party: extra party exactly 5% with neutral pulls');
 		console.log('three-party baseline OK');
 	}
 
@@ -208,12 +230,14 @@ try {
 		const c = ctxOf(basis, rs, core, 3);
 		for (const r of rs) near(S.shares(r, c).D, Math.min(1, r.demShare + 0.015), 1e-8, 'no-cells two-party');
 		const cp = ctxOf(basis, rs, P.presetParties(core));
-		assert.ok(cp.sim.converged, 'no-cells preset converges');
+		assert.ok(rs.every((r) => Math.abs(Object.values(S.shares(r, cp)).reduce((a, b) => a + b, 0) - 1) < 1e-9), 'no-cells preset sums to 1');
 	}
 
 	// legacy party links: a single `audience` becomes one appeal
 	const leg = P.sanitizeParties([...P.coreParties(), { id: 'p1', name: 'Y', share: 25, fromD: 50, states: [], audience: { age: ['18-29'] } }]);
-	assert.deepEqual(leg[2].appeals, [{ filter: { age: ['18-29'] }, share: 25 }]);
+	assert.deepEqual(leg[2].appeals, [{ filter: { age: ['18-29'] }, points: 0, target: 25 }], 'legacy audience -> a target to fit');
+	const leg2 = P.sanitizeParties([...P.coreParties(), { id: 'p1', name: 'Y', share: 5, fromD: 50, states: [], appeals: [{ filter: { race: ['Hispanic'] }, share: 30 }, { filter: {}, points: 4 }, { filter: { planet: 'x' }, points: 3 }] }]);
+	assert.deepEqual(leg2[2].appeals, [{ filter: { race: ['Hispanic'] }, points: 0, target: 30 }, { filter: {}, points: 4 }], 'targets kept for fitting; points kept; malformed dropped');
 	assert.equal(leg[2].share, 0, 'legacy audience party wins nothing elsewhere');
 
 	// voter-group links and keys
@@ -225,9 +249,9 @@ try {
 		{ id: '"><x', filter: {}, vote: 5 },
 		{ id: 'c3', filter: { planet: ['Mars'] }, vote: 5 }
 	] }, dims, { vote: 30, turnout: 50 });
-	assert.equal(sw.segments.length, 2, 'bad id / unknown dimension rejected');
-	assert.equal(sw.segments[0].vote, 30, 'vote clamped');
-	assert.deepEqual(sw.segments[1].filter, {}, 'unknown group dropped from filter');
+	assert.equal(sw.swing.segments.length, 2, 'bad id / unknown dimension rejected');
+	assert.equal(sw.votes[0].vote, 30, 'older vote swing clamped and returned for conversion');
+	assert.deepEqual(sw.swing.segments[1].filter, {}, 'unknown group dropped from filter');
 
 	// 5. untrusted party configs
 	assert.equal(P.sanitizeParties([{ id: 'D' }]), null, 'needs D and R');

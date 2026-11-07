@@ -78,11 +78,14 @@ export interface LoadedMap {
 	report?: unknown;
 }
 
-/** "wins `share`% of the voters matching `filter`" */
+/** a party's appeal to the voters matching `filter`, in points of its share of them at the
+ *  baseline (see model.appealShift); appeals add up across every group a voter is in */
 export interface Appeal {
-	/** per dimension, the allowed groups (see demographics.ts) */
+	/** per dimension, the allowed groups (see demographics.ts); {} = everyone */
 	filter: Record<string, string[]>;
-	share: number;
+	points: number;
+	/** older links stored a share target (%) instead; it is fitted to points once the map loads */
+	target?: number;
 }
 
 export interface Party {
@@ -91,14 +94,14 @@ export interface Party {
 	name: string;
 	color: string;
 	core?: boolean;
-	/** extras only: vote share in % among voters outside its target groups (everyone, if it
-	 *  has none), within its states */
+	/** extras only: base vote share in %, where it runs: exact with neutral pulls and no appeals */
 	share: number;
-	/** extras only: % of its voters drawn from D (rest from R) */
+	/** extras only: "pulls from", 0..100: how much more it attracts D voters (100) or R voters
+	 *  (0) than the other side's; 50 = evenly */
 	fromD: number;
 	/** extras only: groups (states) it contests; empty = everywhere */
 	states: string[];
-	/** voter groups it targets; for D/R these move their share of that group */
+	/** its appeal in voter groups */
 	appeals: Appeal[];
 }
 
