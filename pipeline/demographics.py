@@ -9,7 +9,8 @@
      college | race x sex   C15002B/D/H/I + B15002 (25+; "Other" = remainder)
    Race and age x sex are applied last, so those totals are exact; education is approximate.
    Everyone in a tract is in the tract's place class (urban / suburban / rural, urbanicity.py).
-2. Behavior: CES turnout / Dem share per state x cell (ces_model.py).
+2. Behavior: CES turnout / Dem share per state x cell (ces_model.py); an inferred election uses
+   its base election's survey model.
 3. Calibration per tract and election: one logit offset for turnout and one for Dem share,
    shared by all cells, so the cells reproduce the tract's real two-party votes exactly.
 
@@ -292,7 +293,7 @@ def run(usps: str, force: bool) -> None:
             geoids = v.GEOID.tolist()
             cvap0 = composition(usps, geoids)
         v = v.set_index("GEOID").reindex(geoids).fillna(0)
-        m = np.load(WORK / "ces" / f"{eid}.npz")
+        m = np.load(WORK / "ces" / f"{ELECTIONS[eid].get('base', eid)}.npz")
         si = list(m["states"]).index(usps)
         T = np.clip(m["turnout"][si], 0.01, 0.99)[None, :].repeat(len(geoids), 0)
         Dm = np.clip(m["dem"][si], 0.01, 0.99)[None, :].repeat(len(geoids), 0)

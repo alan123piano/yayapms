@@ -39,7 +39,7 @@ try {
 	const real = (r, p = 'D') => r.baseline[p] / r.votes;
 
 	for (const id of ['us-house-current', 'us-house-fair']) {
-		for (const eid of ['pres-2020', 'pres-2024']) {
+		for (const eid of ['pres-2020', 'pres-2024', 'house-2022', 'house-2026']) {
 			const map = load(id, eid);
 			const rs = map.regions.filter((r) => r.baseline);
 			const cells = map.elections.find((e) => e.id === eid).cells;

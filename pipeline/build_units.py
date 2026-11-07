@@ -1,10 +1,12 @@
 """Build per-state inputs: tract units (population) and per-election vote estimates.
 
-Votes are estimated the same way for every election (as in Dave's Redistricting App):
+Votes are estimated the same way for every precinct-based election (as in Dave's Redistricting App):
   1. Each 2020 census block (with POP20) is located by its interior point.
   2. Each block is assigned to the precinct containing it, and to the current district.
   3. A precinct's votes are split across its blocks proportional to population.
   4. Blocks are summed to tracts (generator/fair-map units) and to current districts.
+An inferred election (sources.ELECTIONS entry with "base"/"swing") instead shifts every tract and
+district of its base election by the state's swing in Democratic two-party share.
 
 Usage: python build_units.py [--force] [--elections pres-2020,pres-2024] WI [NC ...]
 Outputs (skipped if present unless --force), under data/work/<USPS>/:
@@ -64,6 +66,33 @@ def build_units(usps: str, blocks: gpd.GeoDataFrame) -> None:
     print(f"[{usps}] units: {len(tracts)} tracts, pop {int(pop.sum())}")
 
 
+def shift_share(v: pd.DataFrame, swing: float) -> pd.DataFrame:
+    """Move each row's Democratic two-party share by `swing`, keeping its two-party total."""
+    t = v.D + v.R
+    d = (v.D + swing * t).clip(0, t)
+    return v.assign(D=d, R=t - d)
+
+
+_swings: dict[str, dict[str, float]] = {}
+
+
+def build_inferred(usps: str, eid: str) -> None:
+    out = WORK / usps
+    e = ELECTIONS[eid]
+    base = out / "votes" / f"{e['base']}.csv"
+    if not base.exists():
+        print(f"[{usps}] {eid}: skipped (no {e['base']})")
+        (out / "votes" / f"{eid}.unavailable").write_text(f"base election {e['base']} unavailable")
+        return
+    if eid not in _swings:
+        _swings[eid] = e["swing"]()
+    s = _swings[eid][usps]
+    for kind, key in (("votes", "GEOID"), ("current", "cd")):
+        v = pd.read_csv(out / kind / f"{e['base']}.csv", dtype={key: str}).set_index(key)
+        shift_share(v, s).to_csv(out / kind / f"{eid}.csv")
+    print(f"[{usps}] {eid}: {e['base']} shifted {s * 100:+.2f} pts Democratic share")
+
+
 def build_election(usps: str, eid: str, blocks: gpd.GeoDataFrame) -> None:
     out = WORK / usps
     (out / "votes").mkdir(exist_ok=True)
@@ -114,11 +143,14 @@ def build(usps: str, elections: list[str], force: bool) -> None:
     if not need_units and not todo:
         print(f"[{usps}] up to date")
         return
-    blocks = load_blocks(usps)
+    blocks = load_blocks(usps) if need_units or any("base" not in ELECTIONS[e] for e in todo) else None
     if need_units:
         build_units(usps, blocks)
-    for e in todo:
-        build_election(usps, e, blocks)
+    for e in todo:  # ELECTIONS order: bases before the elections inferred from them
+        if "base" in ELECTIONS[e]:
+            build_inferred(usps, e)
+        else:
+            build_election(usps, e, blocks)
 
 
 if __name__ == "__main__":

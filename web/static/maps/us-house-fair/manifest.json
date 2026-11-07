@@ -33,6 +33,30 @@
       "source": "The New York Times 2024 presidential precinct map, allocated to 2020 census blocks by population. Alaska (at-large): statewide MEDSL totals. Parts of OK and SD missing.",
       "credit": "2024 precinct data: The New York Times",
       "cellsFile": "elections/pres-2024.cells.json"
+    },
+    {
+      "id": "house-2022",
+      "file": "elections/house-2022.json",
+      "label": "2022 House (inferred)",
+      "candidates": {
+        "D": "Democrats",
+        "R": "Republicans"
+      },
+      "source": "2020 presidential results shifted per state by the 2020\u21922022 change in the Democratic two-party share of the House vote (FEC certified results, races with both a Democrat and a Republican). Turnout is 2020 presidential turnout.",
+      "base": "pres-2020",
+      "cellsFile": "elections/house-2022.cells.json"
+    },
+    {
+      "id": "house-2026",
+      "file": "elections/house-2026.json",
+      "label": "2026 House (inferred, unofficial)",
+      "candidates": {
+        "D": "Democrats",
+        "R": "Republicans"
+      },
+      "source": "2024 presidential results shifted by the 2024\u21922026 change in the Democratic two-party share of the House vote; per state where pipeline/inputs/house_votes.csv has both years, else national. 2026 counts are unofficial (see that file). Turnout is 2024 presidential turnout.",
+      "base": "pres-2024",
+      "cellsFile": "elections/house-2026.cells.json"
     }
   ],
   "localFile": "local.json"

@@ -6,18 +6,24 @@ data/raw/SHA256SUMS so later runs can detect upstream changes.
 """
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
+import re
 import shutil
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).parent
 RAW = ROOT / "data" / "raw"
 WORK = ROOT / "data" / "work"
 PLANS = ROOT / "plans"
-ALLOWED_HOSTS = {"www2.census.gov", "dataverse.harvard.edu", "int.nyt.com", "www.usreligioncensus.org"}
+INPUTS = ROOT / "inputs"
+ALLOWED_HOSTS = {"www2.census.gov", "dataverse.harvard.edu", "int.nyt.com", "www.usreligioncensus.org",
+                 "www.fec.gov"}
 
 # Current (119th Congress) district boundaries, cartographic (shoreline-clipped)
 CD119_URL = "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_cd119_500k.zip"
@@ -32,6 +38,11 @@ MEDSL2024_DATASET = "doi:10.7910/DVN/NYTPDU"
 DATAVERSE = "https://dataverse.harvard.edu"
 # NYT 2024 presidential precinct map (github.com/nytimes/presidential-precinct-map-2024).
 # License: NYT C-UDA, non-commercial, credit required.
+# FEC "Federal Elections <year>" compilations: certified House results per candidate and district
+FEC_HOUSE = {
+    2020: ("https://www.fec.gov/resources/cms-content/documents/federalelections2020.xlsx", "13. US House Results by State"),
+    2022: ("https://www.fec.gov/resources/cms-content/documents/federalelections2022.xlsx", "8. US House Results by State"),
+}
 NYT2024_URL = "https://int.nyt.com/newsgraphics/elections/map-data/2024/national/{usps}-precincts-with-results.geojson.gz"
 
 STATES = {  # fips: (usps, name)
@@ -79,6 +90,32 @@ def download(url: str, dest: Path) -> Path:
 RELIGION_URL = "https://www.usreligioncensus.org/sites/default/files/2023-06/2020_USRC_Group_Detail.xlsx"
 
 
+def xlsx_rows(path, sheet: str):
+    """Rows of one sheet of an .xlsx as lists of strings (stdlib only: an .xlsx is zipped XML)."""
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with zipfile.ZipFile(path) as z:
+        strings = [("".join(t.text or "" for t in si.iter(f"{{{ns['m']}}}t")))
+                   for si in ET.parse(z.open("xl/sharedStrings.xml")).getroot()]
+        wb = ET.parse(z.open("xl/workbook.xml")).getroot()
+        rid = next(s.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+                   for s in wb.iter(f"{{{ns['m']}}}sheet") if s.get("name") == sheet)
+        rels = ET.parse(z.open("xl/_rels/workbook.xml.rels")).getroot()
+        target = next(r.get("Target") for r in rels if r.get("Id") == rid)
+        with z.open(f"xl/{target}") as f:
+            for _, el in ET.iterparse(f):
+                if el.tag != f"{{{ns['m']}}}row":
+                    continue
+                row = {}
+                for c in el:
+                    v = c.find("m:v", ns)
+                    if v is None:
+                        continue
+                    ref = re.match(r"[A-Z]+", c.get("r")).group()
+                    row[ref] = strings[int(v.text)] if c.get("t") == "s" else v.text
+                yield row
+                el.clear()
+
+
 def religion() -> Path:
     return download(RELIGION_URL, RAW / "religion2020" / "2020_USRC_Group_Detail.xlsx")
 
@@ -122,10 +159,93 @@ def nyt2024(usps: str) -> Path:
     return download(NYT2024_URL.format(usps=usps), RAW / "nyt2024" / f"{usps}-precincts-with-results.geojson.gz")
 
 
+# ---------- House vote totals (for inferred midterm elections) ----------
+# Two-party House vote per state and nationally ("US"): {scope: (D, R, races)}, where races is the
+# number of races counted (None for typed-in totals, which are taken as exact).
+
+_DEM_LABELS = {"D", "DFL", "DNL", "N(D)", "W(D)"}
+_REP_LABELS = {"R", "N(R)", "W(R)"}
+# A state's own swing is trusted in proportion races / (races + SWING_PRIOR_RACES); the rest is the
+# national swing. Keeps states with one or two contested races from swinging on a single candidate.
+SWING_PRIOR_RACES = 4
+
+
+def _major_party(label: str) -> str | None:
+    """'D/WF' -> 'D', 'R*' -> 'R', 'W(D)/D' -> 'D', 'LIB' -> None (FEC party labels)."""
+    parts = {t.strip().rstrip("*") for t in label.split("/")}
+    if parts & _DEM_LABELS:
+        return "D"
+    if parts & _REP_LABELS:
+        return "R"
+    return None
+
+
+def fec_house_contested(year: int) -> dict[str, tuple[float, float, int]]:
+    """Two-party House vote over races with a Democrat and a Republican on the general ballot
+    (unopposed seats would otherwise swamp the swing). All of a party's general-election candidates
+    count (LA, AK multi-candidate generals); fusion lines (NY, CT) count toward the candidate's major
+    party; special elections for unexpired terms are skipped."""
+    url, sheet = FEC_HOUSE[year]
+    f = download(url, RAW / "fec" / Path(url).name)
+    votes: dict[tuple[str, str], dict[str, float]] = {}   # (usps, district) -> candidate -> GE votes
+    party: dict[tuple[str, str], dict[str, str]] = {}     # (usps, district) -> candidate -> D/R
+    for r in xlsx_rows(f, sheet):
+        usps, dist, cand = r.get("B", ""), r.get("D", "").strip(), r.get("E", "n/a")
+        m = re.match(r"\d\d", dist)
+        if usps not in USPS_TO_FIPS or cand == "n/a" or "Unexpired" in dist or not m:
+            continue
+        try:
+            v = float(r.get("P", ""))
+        except ValueError:
+            continue
+        key = (usps, m.group())
+        votes.setdefault(key, {}).setdefault(cand, 0.0)
+        votes[key][cand] += v
+        if (mp := _major_party(r.get("K", ""))) and v > 0:
+            party.setdefault(key, {})[cand] = mp
+    out: dict[str, list[float]] = {}
+    for key, cands in party.items():
+        d = sum(votes[key][c] for c, mp in cands.items() if mp == "D")
+        r_ = sum(votes[key][c] for c, mp in cands.items() if mp == "R")
+        if d > 0 and r_ > 0:  # skips unopposed and same-party (CA/WA top-two) races
+            for scope in (key[0], "US"):
+                acc = out.setdefault(scope, [0.0, 0.0, 0])
+                acc[0] += d
+                acc[1] += r_
+                acc[2] += 1
+    return {k: (v[0], v[1], int(v[2])) for k, v in out.items()}
+
+
+def manual_house_votes(year: int) -> dict[str, tuple[float, float, None]]:
+    """House votes typed in from published counts (inputs/house_votes.csv), for years without
+    a certified machine-readable source yet."""
+    with open(INPUTS / "house_votes.csv") as f:
+        return {r["scope"]: (float(r["D"]), float(r["R"]), None) for r in csv.DictReader(f) if int(r["year"]) == year}
+
+
+def state_swings(before: dict, after: dict) -> dict[str, float]:
+    """Change in Democratic two-party share per state, shrunk toward the national change by the
+    number of races behind it; states missing from either year get the national change."""
+    share = lambda t: t[0] / (t[0] + t[1])
+    national = share(after["US"]) - share(before["US"])
+    out = {}
+    for usps, _ in STATES.values():
+        if usps not in after or usps not in before:
+            out[usps] = national
+            continue
+        counts = [t[2] for t in (before[usps], after[usps]) if t[2] is not None]
+        w = 1.0 if not counts else min(counts) / (min(counts) + SWING_PRIOR_RACES)
+        out[usps] = w * (share(after[usps]) - share(before[usps])) + (1 - w) * national
+    return out
+
+
 # ---------- elections ----------
 # Each loader returns a GeoDataFrame of precincts with columns D, R (votes) and geometry,
 # or raises Unavailable. To add an election, add an entry here; build_units.py and
 # export.py pick it up.
+# An inferred election has "base" (an earlier election id) and "swing" (usps -> change in
+# Democratic two-party share) instead of "load": every tract of the base election shifts by its
+# state's swing. Bases must come before the elections inferred from them.
 
 class Unavailable(Exception):
     pass
@@ -180,5 +300,23 @@ ELECTIONS = {
         "load": _load_nyt2024,
         # used when precinct data is unavailable in an at-large state (statewide total is exact there)
         "statewide": _statewide_medsl2024,
+    },
+    "house-2022": {
+        "label": "2022 House (inferred)",
+        "candidates": {"D": "Democrats", "R": "Republicans"},
+        "source": "2020 presidential results shifted per state by the 2020→2022 change in the Democratic "
+                  "two-party share of the House vote (FEC certified results, races with both a Democrat and a "
+                  "Republican). Turnout is 2020 presidential turnout.",
+        "base": "pres-2020",
+        "swing": lambda: state_swings(fec_house_contested(2020), fec_house_contested(2022)),
+    },
+    "house-2026": {
+        "label": "2026 House (inferred, unofficial)",
+        "candidates": {"D": "Democrats", "R": "Republicans"},
+        "source": "2024 presidential results shifted by the 2024→2026 change in the Democratic two-party share "
+                  "of the House vote; per state where pipeline/inputs/house_votes.csv has both years, else "
+                  "national. 2026 counts are unofficial (see that file). Turnout is 2024 presidential turnout.",
+        "base": "pres-2024",
+        "swing": lambda: state_swings(manual_house_votes(2024), manual_house_votes(2026)),
     },
 }

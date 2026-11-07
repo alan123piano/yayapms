@@ -42,6 +42,8 @@ Steps per state:
 1. `build_units.py`: tract populations, then for each election in `sources.ELECTIONS`
    (2020: VEST, 2024: NYT) precinct votes split to 2020 census blocks by population and summed
    to tracts and current districts. Add an election = add a registry entry + `make data`.
+   House 2022/2026 are inferred: the 2020/2024 presidential map shifted by each state's House swing
+   (FEC certified results for 2022; hand-entered `pipeline/inputs/house_votes.csv` for 2026).
 2. `generate.py`: ReCom Markov chain (GerryChain) on the tract graph, ±1% population,
    contiguous, vote-blind proposals. Picks the most compact plan with the ensemble's most common
    2020 seat outcome (`--select typical`, default) or the most compact overall (`--select compact`).
@@ -54,6 +56,9 @@ Steps per state:
 - The fair generator does not model the Voting Rights Act (no majority-minority constraints),
   county/city splitting, or communities of interest.
 - Elections are presidential two-party votes; the swing is uniform. Not a candidate-level forecast.
+- House 2022/2026 are presidential geography + a state-level House swing, not real House returns
+  (no candidate effects, presidential turnout). 2026 uses unofficial national counts until state
+  totals are added to `pipeline/inputs/house_votes.csv` (needs both 2024 and 2026 rows per state).
 - 2024: no Alaska data (NYT), parts of OK and SD missing. NYT data is non-commercial, credit required.
 
 ## Supply-chain policy
@@ -62,6 +67,6 @@ Steps per state:
   (`npm view` ignores `before=`).
 - Python: everything pinned in `pipeline/requirements.lock` (transitive included);
   verify with `pip install --dry-run --report r.json ...` and `tools/pypi_age_check.py r.json`.
-- Data downloads are limited to an allowlist (census.gov, Harvard Dataverse) and hashed to
+- Data downloads are limited to an allowlist (census.gov, Harvard Dataverse, fec.gov, ...) and hashed to
   `pipeline/data/raw/SHA256SUMS`. Nothing downloaded is executed.
 - App ships a strict CSP (same-origin scripts/data only); imported files are parsed as JSON.

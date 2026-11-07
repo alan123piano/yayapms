@@ -18,10 +18,7 @@ Output: data/work/local_factors.csv.gz  (GEOID, <factor>_num, <factor>_den per f
 """
 from __future__ import annotations
 
-import re
 import sys
-import xml.etree.ElementTree as ET
-import zipfile
 
 import numpy as np
 import pandas as pd
@@ -100,38 +97,12 @@ def acs_factors(geoids: pd.Index) -> pd.DataFrame:
     return out
 
 
-def _xlsx_rows(path, sheet: str):
-    """Rows of one sheet of an .xlsx as lists of strings (stdlib only: an .xlsx is zipped XML)."""
-    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-    with zipfile.ZipFile(path) as z:
-        strings = [("".join(t.text or "" for t in si.iter(f"{{{ns['m']}}}t")))
-                   for si in ET.parse(z.open("xl/sharedStrings.xml")).getroot()]
-        wb = ET.parse(z.open("xl/workbook.xml")).getroot()
-        rid = next(s.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
-                   for s in wb.iter(f"{{{ns['m']}}}sheet") if s.get("name") == sheet)
-        rels = ET.parse(z.open("xl/_rels/workbook.xml.rels")).getroot()
-        target = next(r.get("Target") for r in rels if r.get("Id") == rid)
-        with z.open(f"xl/{target}") as f:
-            for _, el in ET.iterparse(f):
-                if el.tag != f"{{{ns['m']}}}row":
-                    continue
-                row = {}
-                for c in el:
-                    v = c.find("m:v", ns)
-                    if v is None:
-                        continue
-                    ref = re.match(r"[A-Z]+", c.get("r")).group()
-                    row[ref] = strings[int(v.text)] if c.get("t") == "s" else v.text
-                yield row
-                el.clear()
-
-
 def religion_by_county() -> pd.DataFrame:
     """County FIPS -> adherents per tradition and all adherents, and the 2020 population."""
     f = sources.religion()
     acc: dict[str, dict[str, float]] = {}
     pop: dict[str, float] = {}
-    for row in _xlsx_rows(f, "2020 Group by County"):
+    for row in sources.xlsx_rows(f, "2020 Group by County"):
         fips, code, adh, share = row.get("A"), row.get("D"), row.get("G"), row.get("I")
         if not fips or not fips.isdigit() or not adh:
             continue
