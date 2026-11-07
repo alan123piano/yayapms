@@ -14,17 +14,16 @@
 	import SeatSystemPicker from '#lib/SeatSystemPicker.svelte';
 	import ShadingPicker from '#lib/ShadingPicker.svelte';
 	import StatePanel from '#lib/StatePanel.svelte';
-	import SwingSlider from '#lib/SwingSlider.svelte';
 	import Tooltip from '#lib/Tooltip.svelte';
 	import VoteMatrix from '#lib/VoteMatrix.svelte';
 	import {
-		DEFAULT_BRUSH, DEFAULT_ELECTION, DEFAULT_SHADING, DEMO_DIM_LABELS, DEMO_LIMITS, SHADINGS, SWING_STOPS,
+		DEFAULT_BRUSH, DEFAULT_ELECTION, DEFAULT_SHADING, DEMO_DIM_LABELS, DEMO_LIMITS, SHADINGS,
 		type ShadingId
 	} from '#lib/config.ts';
 	import { describe, emptySwing, filterKey, isActive, sanitizeSwing, type GroupOption } from '#lib/demographics.ts';
-	import { loadPack, withElection } from '#lib/loader.ts';
-	import { BASELINE_VARIANTS, baselineFor, fitAppeal, fitBasis, residualPoints, twoPartyD, type Basis, type BaselineVariant, type Scenario } from '#lib/model.ts';
-	import { coreParties, sanitizeParties } from '#lib/parties.ts';
+	import { electionParties, loadPack, withElection } from '#lib/loader.ts';
+	import { BASELINE_VARIANTS, baselineFor, fitAppeal, fitBasis, unexplained, type Basis, type BaselineVariant, type Scenario } from '#lib/model.ts';
+	import { coreParties, sanitizeParties, withElectionParties } from '#lib/parties.ts';
 	import { outcomeFill, residualFill } from '#lib/shading.ts';
 	import { buildContext, FPTP, outcome, tally, type SeatSystem } from '#lib/sim.ts';
 	import type { Level, LoadedMap, Override, Party, Region, StateReport } from '#lib/types.ts';
@@ -37,7 +36,6 @@
 	let election = $state(DEFAULT_ELECTION);
 	/** which version of the election to start from: real, model only, demographics only */
 	let variant = $state<BaselineVariant>('real');
-	let swing = $state(0);
 	/** per-group vote/turnout changes (Voter groups panel) */
 	let demoSwing = $state(emptySwing());
 	let parties = $state<Party[]>(coreParties());
@@ -114,21 +112,8 @@
 			Object.entries(fitted).map(([id, b]) => [id, hasCellsFor(id) ? baselineFor(b, variant) : b])
 		) as Record<string, Basis>
 	);
-	/** maps whose region baselines (demShare) are the selected baseline */
-	let maps = $derived(
-		Object.fromEntries(
-			Object.entries(electionMaps).map(([id, m]) => {
-				if (variant === 'real' || !hasCellsFor(id)) return [id, m];
-				const b = bases[id];
-				if (!b) return [id, m];
-				return [id, { ...m, regions: m.regions.map((r) => {
-					const rb = b.regions.get(r.id);
-					return rb ? { ...r, demShare: twoPartyD(rb.actual) } : r;
-				}) }];
-			})
-		) as Record<string, LoadedMap>
-	);
-	let scenario = $derived<Scenario>({ swing, segments: demoSwing.segments, parties });
+	let maps = $derived(electionMaps);
+	let scenario = $derived<Scenario>({ segments: demoSwing.segments, parties });
 	/** the scenario for the Compare maps table: it re-runs every map, so it follows the
 	 *  scenario only once a slider has been still for a moment (not on every drag step) */
 	let settled = $state.raw<Scenario | null>(null);
@@ -149,7 +134,18 @@
 	let ctx = $derived(map ? buildContext(bases[currentId], map.regions, scenario, ov) : null);
 	let t = $derived(map && ctx ? tally(map.regions, ctx, seatSystem) : null);
 	let groups = $derived(map ? [...new Set(map.regions.map((r) => r.group).filter(Boolean))].sort() : []);
-	let hasBaseline = $derived(!!map?.regions.some((r) => r.demShare !== null));
+	let hasBaseline = $derived(!!map?.regions.some((r) => r.baseline));
+
+	// the parties list always holds the election's own parties (from its data), in data order
+	$effect(() => {
+		const el = electionInfo;
+		if (!el) return;
+		const ids = electionParties(el);
+		untrack(() => {
+			const next = withElectionParties(parties, ids, el.candidates ?? {});
+			if (next.map((p) => `${p.id}:${p.core}`).join() !== parties.map((p) => `${p.id}:${p.core}`).join()) parties = next;
+		});
+	});
 	let groupTally = $derived(
 		focusGroup && map && ctx ? tally(map.regions.filter((r) => r.group === focusGroup), ctx) : null
 	);
@@ -215,12 +211,11 @@
 	}
 
 	// ---------- persistence: URL hash (shareable state) + localStorage (preferences) ----------
-	const SWING_MAX = SWING_STOPS[SWING_STOPS.length - 1];
 	const STORAGE_KEY = 'yayapms.parties.v2';
 
 	function encodeHash(): string {
 		const o = Object.entries(ov).map(([k, v]) => `${k}:${v.p}${v.l}`).join(',');
-		const p = new URLSearchParams({ map: currentId, election, swing: String(swing) });
+		const p = new URLSearchParams({ map: currentId, election });
 		if (variant !== 'real') p.set('baseline', variant);
 		if (o) p.set('o', o);
 		if (focusGroup) p.set('focus', focusGroup);
@@ -247,7 +242,7 @@
 		const e = p.get('election');
 		if (e && /^[a-z0-9-]{1,40}$/.test(e)) election = e;
 		const sw = Number(p.get('swing'));
-		if (Number.isFinite(sw) && Math.abs(sw) <= SWING_MAX) swing = sw;
+		const oldSwing = Number.isFinite(sw) && Math.abs(sw) <= 40 ? sw : 0;
 		const bv = p.get('baseline');
 		variant = BASELINE_VARIANTS.some((x) => x.id === bv) ? (bv as BaselineVariant) : 'real';
 		const id = p.get('map');
@@ -271,6 +266,9 @@
 			const ps = sanitizeParties(JSON.parse(p.get('parties') ?? 'null'));
 			if (ps) parties = ps;
 		} catch { /* ignore malformed */ }
+		// older links: a uniform D-vs-R swing of m margin points ≈ a D appeal of m/2 among everyone
+		const d = parties.find((x) => x.id === 'D');
+		if (oldSwing && d) d.appeals = [...d.appeals.filter((a) => Object.keys(a.filter).length), { filter: {}, points: oldSwing / 2 }];
 		return id;
 	}
 
@@ -353,7 +351,7 @@
 	}
 
 	/** Left click paints with the brush; clicking the same party again steps Safe→Likely→Lean→Tilt→Safe.
-	 *  Right click returns the region to auto (baseline + swing). */
+	 *  Right click returns the region to auto (the simulated result). */
 	function pick(r: Region, secondary: boolean) {
 		if (!ctx) return;
 		if (secondary || brush === 'auto') return setOverride(r.id, null);
@@ -365,7 +363,7 @@
 	function fill(r: Region): string {
 		if (shading === 'residual') {
 			const rb = fitted[currentId]?.regions.get(r.id);
-			return rb ? residualFill(residualPoints(rb), byId) : 'var(--unrated)';
+			return rb ? residualFill(unexplained(rb), byId) : 'var(--unrated)';
 		}
 		return ctx ? outcomeFill(outcome(r, ctx), byId, shading) : 'var(--unrated)';
 	}
@@ -412,9 +410,6 @@
 		{#if t && map}
 			<SeatSummary tally={t} {parties} />
 			<SeatSystemPicker bind:system={seatSystem} />
-			{#if hasBaseline}
-				<SwingSlider bind:swing baseline={baselineLabel} />
-			{/if}
 			{#if electionInfo?.cells && hasBaseline}
 				<h3>Voter groups</h3>
 				{#if ctx?.sim}<DemographicPanel sim={ctx.sim} cells={electionInfo.cells} bind:swing={demoSwing} bind:parties onfit={fit} />{/if}
@@ -455,6 +450,7 @@
 		y={hover.y}
 		{byId}
 		residual={fitted[currentId]?.regions.get(hover.r.id)}
+		before={bases[currentId]?.regions.get(hover.r.id)}
 		hasCells={!!electionInfo?.cells}
 		electionLabel={baselineLabel}
 	/>

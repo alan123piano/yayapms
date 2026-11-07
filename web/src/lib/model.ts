@@ -22,9 +22,7 @@ import type { CellData, LocalData, Party, Region } from './types';
  *       in, so young men get Men + 18-29 + any young-men appeal. Districts follow through the
  *       logit, so +10 among young voters moves an R+40 district's young voters less.
  *    b. Turnout changes scale a group's voters (capped at 99.5% of citizens of voting age).
- *    c. The uniform D/R swing moves every district's two-party result by exactly that many
- *       points (shifting each cell in proportion to the voters it has left to give).
- *    d. Extra parties win voters away from each baseline party. A voter of party k in cell c
+ *    c. Extra parties win voters away from each baseline party. A voter of party k in cell c
  *       stays or defects to party p with softmax odds exp(η_p,c + pull_p,k): η from its base
  *       share and its appeals, pull from how strongly it attracts k's voters ("pulls from").
  *    Every combination of inputs is valid; the outputs are the vote shares.
@@ -108,20 +106,16 @@ export interface Basis {
 }
 
 export interface BasisFit {
-	/** spread (vote-weighted sd) of the D-vs-R margin residual after each layer, in points */
-	spread: { id: StageId | 'unexplained'; points: number }[];
+	/** how far districts' real results still are from each layer's prediction: vote-weighted
+	 *  root mean square over districts and parties of (real share - predicted share), in points */
+	spread: { id: StageId; points: number }[];
 	/** local factors: cross-validated share of the within-state residual they explain, and each
-	 *  factor's effect on the D-vs-R margin per standard deviation of the factor (points) */
-	local: { r2: number; effects: { id: string; label: string; points: number }[] } | null;
+	 *  factor's effect on every party's national share per standard deviation of the factor
+	 *  within a state (points of vote share) */
+	local: { r2: number; effects: { id: string; label: string; byParty: Record<string, number> }[] } | null;
 	/** neighbors: how much of a district's remaining residual follows its neighbors' (0..1) */
 	neighbors: { weight: number } | null;
 }
-
-/** Baseline parties of an election with demographic cells (older files: D, then R). */
-export const cellParties = (cells?: CellData) => cells?.parties ?? ['D', 'R'];
-
-/** Two-party D share of a per-party record. */
-export const twoPartyD = (x: Record<string, number>) => (x.D + x.R > 0 ? x.D / (x.D + x.R) : 0);
 
 /** the dimensions whose state-specific pattern the state layer learns */
 const STATE_LAYER_DIMS = ['race', 'edu'];
@@ -137,10 +131,10 @@ const STATE_LAYER_DIMS = ['race', 'edu'];
 export function fitBasis(regions: Region[], cells?: CellData, local?: LocalData): Basis {
 	const labels = cells ? cellLabels(cells) : [{}];
 	const n = labels.length;
-	const parties = cellParties(cells);
+	const rated = regions.filter((r) => r.votes > 0 && r.baseline);
+	const parties = cells?.parties ?? Object.keys(rated[0]?.baseline ?? {});
 	const K = parties.length;
 	const ref = K - 1;
-	const rated = regions.filter((r) => r.demShare !== null && r.votes > 0 && r.baseline);
 	/** a region's real votes per party */
 	const official = (r: Region) => parties.map((p) => r.baseline![p] ?? 0);
 
@@ -301,7 +295,8 @@ export function fitBasis(regions: Region[], cells?: CellData, local?: LocalData)
 	}
 
 	// local factors and neighbors: explain the within-state residual (layers 3 and 4)
-	const localFit = explainResidual(rows, tot, sOf, K, local);
+	const national = parties.map((_, k) => rows.reduce((a, r, j) => a + r.actual[parties[k]] * tot[j], 0) / (sum(tot) || 1));
+	const localFit = explainResidual(rows, tot, sOf, parties, national, local);
 
 	// baseline utilities and what each layer explains
 	const shareOf = (r: RegionBasis, j: number, util: (k: number, i: number) => number) => {
@@ -331,24 +326,18 @@ export function fitBasis(regions: Region[], cells?: CellData, local?: LocalData)
 		];
 	});
 	const regionsMap = new Map(rows.map((r) => [r.id, r]));
-	const ids: (StageId | 'unexplained')[] = [...(rows[0]?.stages.map((x) => x.id) ?? []), 'unexplained'];
-	const spread = ids.map((id) => {
-		const res = rows.map((r) => {
-			const st = id === 'unexplained' ? null : r.stages.find((x) => x.id === id);
-			return margin2(r.actual) - (st ? margin2(st.shares) : margin2(r.actual));
-		});
-		return { id, points: wsd(res, tot) };
+	const spread = (rows[0]?.stages ?? []).map(({ id }) => {
+		const W = sum(tot);
+		const ms = rows.reduce((a, r, j) => {
+			const st = r.stages.find((x) => x.id === id)!.shares;
+			return a + tot[j] * parties.reduce((b, p) => b + ((r.actual[p] - st[p]) * 100) ** 2, 0) / K;
+		}, 0);
+		return { id, points: W ? Math.sqrt(ms / W) : 0 };
 	});
 	return {
 		n, labels, parties, alpha, rate, voters: Vc, regions: regionsMap,
-		fit: { spread: spread.slice(0, -1), local: localFit.local, neighbors: localFit.neighbors }
+		fit: { spread, local: localFit.local, neighbors: localFit.neighbors }
 	};
-}
-
-/** vote-weighted standard deviation around 0 */
-function wsd(x: number[], w: number[]): number {
-	const W = w.reduce((a, b) => a + b, 0);
-	return W ? Math.sqrt(x.reduce((a, v, i) => a + w[i] * v * v, 0) / W) : 0;
 }
 
 /** Solve (A + λI) x = b for a small dense symmetric system. */
@@ -392,8 +381,9 @@ function ridge(X: number[][], y: number[], w: number[], lambda: number): number[
  * Writes rhoHat (local + neighbor part) on each row.
  */
 function explainResidual(
-	rows: RegionBasis[], tot: number[], sOf: Int32Array, K: number, local?: LocalData
+	rows: RegionBasis[], tot: number[], sOf: Int32Array, parties: string[], national: number[], local?: LocalData
 ): { local: BasisFit['local']; neighbors: BasisFit['neighbors']; localPart: Float64Array[] } {
+	const K = parties.length;
 	const ref = K - 1;
 	const R = rows.length;
 	const localPart = rows.map(() => new Float64Array(K));
@@ -414,7 +404,7 @@ function explainResidual(
 		const sd = Math.sqrt(X.reduce((a, x, j) => a + w[j] * x[f] * x[f], 0) / R) || 1;
 		X.forEach((x) => { x[f] /= sd; });
 	}
-	// pick the ridge penalty by 5-fold cross-validation on the D-vs-R residual (or party 0's)
+	// pick the ridge penalty by 5-fold cross-validation, over every party's residual
 	const target = (k: number) => rows.map((r) => r.rho[k]);
 	const lambdas = [0.3, 1, 3, 10, 30, 100, 300, 1000];
 	const cvR2 = (y: number[], lambda: number) => {
@@ -430,10 +420,10 @@ function explainResidual(
 		}
 		return ss ? 1 - sr / ss : 0;
 	};
-	const y0 = target(0);
 	let best = lambdas[0], bestR2 = -Infinity;
 	for (const l of lambdas) {
-		const r2 = cvR2(y0, l);
+		let r2 = 0;
+		for (let k = 0; k < ref; k++) r2 += cvR2(target(k), l) / ref;
 		if (r2 > bestR2) { bestR2 = r2; best = l; }
 	}
 	const betas: number[][] = [];
@@ -442,9 +432,13 @@ function explainResidual(
 		betas.push(beta);
 		rows.forEach((r, j) => { localPart[j][k] = X[j].reduce((a, x, f) => a + x * beta[f], 0); });
 	}
-	// a factor's effect on the D-vs-R margin per sd: logit change ≈ 4 x share change at 50%,
-	// x 200 margin points per share; reported for the D vs R pair (log-odds of D vs R)
-	const effects = local.factors.map((f, i) => ({ id: f.id, label: f.label, points: (betas[0]?.[i] ?? 0) * 50 }));
+	// a factor's effect on each party's share (points per sd), at the national shares s:
+	// d s_k = s_k (β_k - Σ_j s_j β_j), with the reference party's β = 0
+	const effects = local.factors.map((f, i) => {
+		const b = parties.map((_, k) => (k < ref ? betas[k][i] : 0));
+		const avg = b.reduce((a, x, k) => a + national[k] * x, 0);
+		return { id: f.id, label: f.label, byParty: Object.fromEntries(parties.map((p, k) => [p, national[k] * (b[k] - avg) * 100])) };
+	});
 
 	// neighbors
 	const index = new Map(rows.map((r, j) => [r.id, j]));
@@ -463,7 +457,7 @@ function explainResidual(
 			});
 			weightOf.push(sxx ? Math.min(1, Math.max(0, sxy / sxx)) : 0);
 		}
-		neighbors = { weight: weightOf[0] ?? 0 };
+		neighbors = { weight: weightOf.reduce((a, x) => a + x, 0) / (weightOf.length || 1) };
 	}
 	rows.forEach((r, j) => {
 		for (let k = 0; k < ref; k++) {
@@ -534,32 +528,29 @@ export function modelOnly(b: Basis): Basis {
 	return { ...b, regions };
 }
 
-const margin2 = (x: Record<string, number>) => ((x.D ?? 0) - (x.R ?? 0)) * 100;
-
-/** District residual in D-vs-R margin points: real minus what every modeled layer predicts (+ = more D). */
-export function residualPoints(r: RegionBasis): number {
+/** Per party: real share minus what every modeled layer predicts, in points (sums to 0). */
+export function unexplained(r: RegionBasis): Record<string, number> {
 	const last = r.stages[r.stages.length - 1]?.shares ?? r.expected;
-	return margin2(r.actual) - margin2(last);
+	return Object.fromEntries(Object.keys(r.actual).map((p) => [p, (r.actual[p] - (last[p] ?? 0)) * 100]));
 }
 
-/** D-vs-R margin points each layer adds, demographics first, then the unexplained rest. */
-export function decomposition(r: RegionBasis): { id: StageId | 'unexplained'; points: number }[] {
+/** One party's share in points: demographics' prediction, then what each later layer adds, then
+ *  the unexplained rest; they sum to its real share. */
+export function decomposition(r: RegionBasis, party: string): { id: StageId | 'unexplained'; points: number }[] {
 	const out: { id: StageId | 'unexplained'; points: number }[] = [];
 	let prev = 0;
 	for (const s of r.stages) {
-		const m = margin2(s.shares);
+		const m = (s.shares[party] ?? 0) * 100;
 		out.push({ id: s.id, points: m - prev });
 		prev = m;
 	}
-	out.push({ id: 'unexplained', points: margin2(r.actual) - prev });
+	out.push({ id: 'unexplained', points: (r.actual[party] ?? 0) * 100 - prev });
 	return out;
 }
 
 // ---------- 2. scenario ----------
 
 export interface Scenario {
-	/** uniform two-party swing in points (+ = toward D), the same in every district */
-	swing: number;
 	/** voter groups: turnout changes (and the custom groups' definitions) */
 	segments: Segment[];
 	parties: Party[];
@@ -571,8 +562,6 @@ export interface Simulation {
 	baselineParties: string[];
 	/** per region: vote share by party id */
 	shares: Map<string, Record<string, number>>;
-	/** per region: two-party D share after appeals and turnout, before the uniform swing */
-	lean: Map<string, number>;
 	/** per region: number of voters */
 	votes: Map<string, number>;
 	/** national totals for the voters matching a filter */
@@ -592,6 +581,11 @@ export interface GroupResult {
 const membership = (labels: Record<string, string>[], f: Filter) => Uint8Array.from(labels, (l) => (matches(l, f) ? 1 : 0));
 const clampShare = (p: number) => Math.min(1 - 1e-6, Math.max(1e-6, p));
 
+/** A new party's "pulls from" weights per baseline party (missing ones: equal). */
+export function pullsOf(p: Party, base: string[]): Record<string, number> {
+	return Object.fromEntries(base.map((id) => [id, p.pulls?.[id] ?? 50]));
+}
+
 /** Extra parties that are on the ballot (some vote share somewhere). */
 export const isLive = (p: Party) => p.core || p.share > 0 || p.appeals.some((a) => a.points > 0);
 
@@ -607,19 +601,58 @@ export function baselineShare(b: Basis, partyId: string, f: Filter): number {
 
 /**
  * Appeals are entered in points of the party's share of the group, at the baseline: "+5"
- * = what would take it from s to s + 5 points if nothing else changed. Each converts ONCE
- * into a fixed utility shift, logit(s + x) - logit(s), with s from the real election (baseline
- * parties) or the party's own base share (new parties). Shifts add up across every group a
- * voter is in, so any combination of settings is valid and nothing has to be solved.
+ * = what takes it from s to s + 5 points if nothing else changes. Each converts once into a
+ * fixed utility shift: for the election's parties, solved against the baseline itself (every
+ * district's cells), so the promise is exact (calibratedShift); for added parties,
+ * logit(s + x) - logit(s) from the party's own base share. Shifts add up across every group a
+ * voter is in, so any combination of settings is valid.
  */
 export function appealShift(s: number, points: number): number {
 	return logit(clampShare(s + points / 100)) - logit(clampShare(s));
 }
 
+const shiftCache = new WeakMap<Basis, Map<string, number>>();
+
+/** The utility shift for baseline party k among `f` that raises its national share of that
+ *  group by exactly `points` at the baseline (Newton's method on every district's cells). */
+export function calibratedShift(b: Basis, k: number, f: Filter, points: number): number {
+	let cache = shiftCache.get(b);
+	if (!cache) shiftCache.set(b, (cache = new Map()));
+	const key = `${k}|${filterKey(f)}|${points}`;
+	const hit = cache.get(key);
+	if (hit !== undefined) return hit;
+	const m = membership(b.labels, f);
+	const K = b.parties.length;
+	const u = new Float64Array(K), pr = new Float64Array(K);
+	const at = (d: number) => {
+		let v = 0, x = 0, dx = 0;
+		for (const r of b.regions.values()) {
+			for (let i = 0; i < b.n; i++) {
+				if (!m[i] || !r.V[i]) continue;
+				for (let j = 0; j < K; j++) u[j] = r.u0[j][i] + (j === k ? d : 0);
+				softmax(u, pr);
+				v += r.V[i];
+				x += r.V[i] * pr[k];
+				dx += r.V[i] * pr[k] * (1 - pr[k]);
+			}
+		}
+		return { s: v ? x / v : 0, ds: v ? dx / v : 0 };
+	};
+	const s0 = at(0).s;
+	const want = clampShare(s0 + points / 100);
+	let d = appealShift(s0, points);
+	for (let it = 0; it < 30; it++) {
+		const { s, ds } = at(d);
+		if (Math.abs(s - want) < 1e-9 || ds < 1e-12) break;
+		d = clampLim(d - (s - want) / ds);
+	}
+	cache.set(key, d);
+	return d;
+}
+
 export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation {
 	const { n, labels, parties: base } = b;
 	const K = base.length;
-	const iD = base.indexOf('D'), iR = base.indexOf('R');
 	const fx = cellEffects(labels, { segments: sc.segments });
 
 	// baseline parties: utility shift per cell from their appeals
@@ -629,7 +662,7 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 		if (k < 0) continue;
 		for (const a of p.appeals) {
 			if (!a.points) continue;
-			const d = appealShift(baselineShare(b, p.id, a.filter), a.points);
+			const d = calibratedShift(b, k, a.filter, a.points);
 			const m = membership(labels, a.filter);
 			for (let i = 0; i < n; i++) if (m[i]) shift[k][i] += d;
 		}
@@ -652,15 +685,16 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 		}
 		return e;
 	});
-	/** "pulls from": weight on D (fromD) vs R (the rest); 50/50 is neutral; other parties neutral */
-	const pull = extras.map((p) =>
-		base.map((id) => (id === 'D' ? Math.log(Math.max(1e-12, 2 * p.fromD / 100)) : id === 'R' ? Math.log(Math.max(1e-12, 2 * (1 - p.fromD / 100))) : 0))
-	);
+	/** "pulls from": relative attraction of each baseline party's voters; equal weights = neutral */
+	const pull = extras.map((p) => {
+		const w = base.map((id) => Math.max(0, pullsOf(p, base)[id]));
+		const W = w.reduce((a, x) => a + x, 0) || 1;
+		return w.map((x) => Math.log(Math.max(1e-12, (x * base.length) / W)));
+	});
 	const runs = extras.map((p) => (p.states.length ? new Set(p.states) : null));
 	const partyIds = [...base, ...extras.map((p) => p.id)];
 
 	const shares = new Map<string, Record<string, number>>();
-	const lean = new Map<string, number>();
 	const votesBy = new Map<string, number>();
 	const cellParty: Record<string, Float64Array> = Object.fromEntries(partyIds.map((id) => [id, new Float64Array(n)]));
 	const cellV = new Float64Array(n), cellC = new Float64Array(n);
@@ -680,28 +714,10 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 			return Math.min(v * m, Math.max(v, rb.C[i] * 0.995));
 		});
 		// baseline parties: softmax of the baseline utility (every layer) + appeals
-		let dv = 0, pool = 0;
 		for (let i = 0; i < n; i++) {
 			for (let k = 0; k < K; k++) u[k] = rb.u0[k][i] + shift[k][i];
 			softmax(u, pr);
 			for (let k = 0; k < K; k++) S[k][i] = pr[k];
-			if (iD >= 0 && iR >= 0) { dv += Vp[i] * pr[iD]; pool += Vp[i] * (pr[iD] + pr[iR]); }
-		}
-		// uniform swing: exactly swing/200 on the district's two-party D share, taken from
-		// voters still available
-		const L0 = pool ? dv / pool : twoPartyD(rb.actual);
-		const L1 = Math.min(1, Math.max(0, L0 + sc.swing / 200));
-		if (pool && L1 !== L0) {
-			const up = L1 > L0;
-			const kk = up ? (L1 - L0) / (1 - L0) : (L0 - L1) / L0;
-			for (let i = 0; i < n; i++) {
-				const p = S[iD][i] + S[iR][i];
-				if (!p) continue;
-				let l = S[iD][i] / p;
-				l = up ? l + (1 - l) * kk : l * (1 - kk);
-				S[iD][i] = p * l;
-				S[iR][i] = p * (1 - l);
-			}
 		}
 		// extra parties take their defectors from each baseline party
 		const on = extras.flatMap((_, j) => (!runs[j] || runs[j]!.has(rb.group) ? [j] : []));
@@ -731,7 +747,6 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 		}
 		if (V > 0) for (const id of partyIds) acc[id] /= V;
 		shares.set(rb.id, acc);
-		lean.set(rb.id, L0);
 		votesBy.set(rb.id, V);
 	}
 
@@ -740,7 +755,6 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 		partyIds,
 		baselineParties: base,
 		shares,
-		lean,
 		votes: votesBy,
 		group(f) {
 			const m = membership(labels, f);

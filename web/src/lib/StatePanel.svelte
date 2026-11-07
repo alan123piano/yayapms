@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { fmtMargin } from './format';
-	import { margin, rankParties, type Tally } from './sim';
+	import { rankParties, type Tally } from './sim';
 	import type { Party, StateReport } from './types';
 
 	interface Props {
@@ -12,6 +11,7 @@
 	}
 	let { group, tally, parties, report, onback }: Props = $props();
 
+	/** the fair-map report (pipeline/generate.py) records one party's seats: the Democratic party's */
 	let d = $derived(parties.find((p) => p.id === 'D'));
 	let hist = $derived(report?.ensemble?.dem_seats_2020);
 	let histMax = $derived(hist ? Math.max(...Object.values(hist)) : 1);
@@ -34,7 +34,7 @@
 		{/each}
 	</div>
 	<p class="muted small">
-		Outlined bar = this map's plan. Statewide 2020: {fmtMargin(margin(report.statewide_dem_share_2020 ?? 0.5, 0))}.
+		Outlined bar = this map's plan. Statewide 2020: {d?.name ?? 'D'} {((report.statewide_dem_share_2020 ?? 0.5) * 100).toFixed(1)}% (two-party).
 	</p>
 {/if}
 <button type="button" class="link" onclick={onback}>back to national</button>

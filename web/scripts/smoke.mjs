@@ -32,14 +32,16 @@ try {
 	const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) < tol, `${msg}: ${a} vs ${b}`);
 
 	const M = await vite.ssrLoadModule('/src/lib/model.ts');
-	const ctxOf = (basis, regions, parties, swing = 0, segments = [], ov = {}) =>
-		S.buildContext(basis, regions, { swing, segments, parties }, ov);
-	const party = (o) => ({ id: 'p1', name: 'X', color: '#888888', share: 0, fromD: 50, states: [], appeals: [], ...o });
+	const ctxOf = (basis, regions, parties, segments = [], ov = {}) =>
+		S.buildContext(basis, regions, { segments, parties }, ov);
+	const party = (o) => ({ id: 'p1', name: 'X', color: '#888888', share: 0, states: [], appeals: [], ...o });
+	/** a region's real share of a party */
+	const real = (r, p = 'D') => r.baseline[p] / r.votes;
 
 	for (const id of ['us-house-current', 'us-house-fair']) {
 		for (const eid of ['pres-2020', 'pres-2024']) {
 			const map = load(id, eid);
-			const rs = map.regions.filter((r) => r.demShare !== null);
+			const rs = map.regions.filter((r) => r.baseline);
 			const cells = map.elections.find((e) => e.id === eid).cells;
 			const t0 = performance.now();
 			const basis = M.fitBasis(map.regions, cells, map.local);
@@ -59,7 +61,7 @@ try {
 				let V = 0, D = 0;
 				for (let i = 0; i < n; i++) { V += r.cells[n + i]; D += r.cells[2 * n + i]; }
 				near(V, r.votes, 50, `${r.id} cell voters`);
-				near(D, r.demShare * r.votes, 50, `${r.id} cell Dem votes`);
+				near(D, r.baseline.D, 50, `${r.id} cell Dem votes`);
 				const rb = basis.regions.get(r.id);
 				let fd = 0;
 				for (let i = 0; i < n; i++) {
@@ -67,7 +69,7 @@ try {
 					fd += rb.V[i] * p;
 					natV[i] += rb.V[i]; natD[i] += rb.P[0][i]; fitD[i] += rb.V[i] * p;
 				}
-				const derr = Math.abs(fd / rb.V.reduce((a, x) => a + x, 0) - r.demShare);
+				const derr = Math.abs(fd / rb.V.reduce((a, x) => a + x, 0) - real(r));
 				worstDistrict = Math.max(worstDistrict, derr);
 				assert.ok(derr < 1e-6, `${r.id}: basis reproduces the district (${derr})`);
 			}
@@ -86,15 +88,20 @@ try {
 				for (const [key, a] of Object.entries(acc)) if (a.v > 2000) near(a.f / a.v, a.d / a.v, 1e-5, `${key}: state layer reproduces the state's class`);
 			}
 
-			// 2. two-party: exactly the real result + uniform swing
-			for (const sw of [-7, 0, 4.5]) {
-				const ctx = ctxOf(basis, rs, core, sw);
+			// 2. no settings: exactly the real result, every party; outcomes follow the shares
+			{
+				const ctx = ctxOf(basis, rs, core);
 				for (const r of rs) {
 					const o = S.outcome(r, ctx);
-					near(o.shares.D, Math.min(1, Math.max(0, r.demShare + sw / 200)), 1e-6, `${r.id} D share @${sw}`);
-					assert.equal(o.level, S.levelFromMargin(S.margin(r.demShare, sw)), 'level');
+					for (const q of Object.keys(r.baseline)) near(o.shares[q], real(r, q), 1e-6, `${r.id} ${q} share`);
+					const [a1, a2] = Object.values(r.baseline).sort((x, y) => y - x);
+					assert.equal(o.level, S.levelFromMargin(((a1 - a2) / r.votes) * 100), 'level');
 				}
-				assert.equal(S.tally(rs, ctx).seats.D, rs.filter((r) => S.margin(r.demShare, sw) > 0).length, `D seats @${sw}`);
+				assert.equal(S.tally(rs, ctx).seats.D, rs.filter((r) => r.baseline.D > r.baseline.R).length, 'D seats');
+				// an appeal among everyone moves the party's national share by about that much
+				const up = ctxOf(basis, rs, core.map((p) => (p.id === 'R' ? { ...p, appeals: [{ filter: {}, points: 3 }] } : p)));
+				const dR = (up.sim.group({}).shares.R - ctx.sim.group({}).shares.R) * 100;
+				near(dR, 3, 1e-4, 'R +3 among everyone moves R exactly 3 points nationally');
 			}
 			const ctx0 = ctxOf(basis, rs, core);
 			const t0s = S.tally(rs, ctx0);
@@ -113,10 +120,10 @@ try {
 			}
 			const tm = S.tally(rs, ctx);
 			// a new party with neutral pulls and no appeals wins exactly its base share everywhere
-			const flat = ctxOf(basis, rs, [...core, party({ share: 12, fromD: 50 })]);
+			const flat = ctxOf(basis, rs, [...core, party({ share: 12 })]);
 			for (const r of rs.slice(0, 20)) near(S.shares(r, flat).p1, 0.12, 1e-9, `${r.id}: base share exact`);
 			// the example parties with neutral pulls: every base share exact in every district it runs in
-			const neutral = parties.map((p) => (p.core ? p : { ...p, fromD: 50 }));
+			const neutral = parties.map((p) => (p.core ? p : { ...p, pulls: undefined }));
 			const cn = ctxOf(basis, rs, neutral);
 			for (const r of rs) for (const q of neutral.filter((q) => !q.core)) {
 				const runsHere = !q.states.length || q.states.includes(r.group);
@@ -127,14 +134,14 @@ try {
 			near(two.sim.group({}).shares.p1, 0.10, 1e-9, 'two new parties: 10%');
 			near(two.sim.group({}).shares.p2, 0.20, 1e-9, 'two new parties: 20%');
 			// pulls: 100% from D takes only D voters
-			const pullD = ctxOf(basis, rs, [...core, party({ share: 10, fromD: 100 })]);
+			const pullD = ctxOf(basis, rs, [...core, party({ share: 10, pulls: { D: 100, R: 0 } })]);
 			near(pullD.sim.group({}).shares.R, ctx0.sim.group({}).shares.R, 1e-9, 'pulling only from D leaves R untouched');
 
 			// 4. appeals: points at the baseline, only the group's cells move, they add up
 			const app = (id, f, points) => core.map((p) => (p.id === id ? { ...p, appeals: [...p.appeals, { filter: f, points }] } : p));
 			const cd = ctxOf(basis, rs, app('D', { race: ['Hispanic'] }, 10));
 			const dh = (cd.sim.group({ race: ['Hispanic'] }).shares.D - ctx0.sim.group({ race: ['Hispanic'] }).shares.D) * 100;
-			assert.ok(dh > 7 && dh < 11, `D +10 among Hispanics moves them ~10 points (${dh.toFixed(2)})`);
+			near(dh, 10, 1e-4, 'D +10 among Hispanics moves them exactly 10 points');
 			for (const g of ['White', 'Black', 'Asian']) near(cd.sim.group({ race: [g] }).shares.D, ctx0.sim.group({ race: [g] }).shares.D, 1e-12, `${g} untouched`);
 			const ym = ctxOf(basis, rs, [...core.map((p) => (p.id === 'D' ? { ...p, appeals: [{ filter: { age: ['18-29'] }, points: 5 }, { filter: { sex: ['Men'] }, points: 5 }] } : p))]);
 			const both = ym.sim.group({ age: ['18-29'], sex: ['Men'] }).shares.D - ctx0.sim.group({ age: ['18-29'], sex: ['Men'] }).shares.D;
@@ -146,12 +153,12 @@ try {
 			const cs = ctxOf(basis, rs, app('D', { age: ['18-29'] }, 5));
 
 			// 5. fit to a share: finds the appeal, any party
-			const sc0 = { swing: 0, segments: [], parties: core };
+			const sc0 = { segments: [], parties: core };
 			const f1 = M.fitAppeal(basis, rs, sc0, 'D', { race: ['Hispanic'] }, 0.6);
 			assert.ok(f1.reached, 'fit reached');
 			const cf = ctxOf(basis, rs, app('D', { race: ['Hispanic'] }, f1.points));
 			near(cf.sim.group({ race: ['Hispanic'] }).shares.D, 0.6, 0.002, `fit D to 60% of Hispanics (${f1.points} pts)`);
-			const yp = [...core, party({ share: 3, fromD: 60 })];
+			const yp = [...core, party({ share: 3, pulls: { D: 60, R: 40 } })];
 			const f2 = M.fitAppeal(basis, rs, { ...sc0, parties: yp }, 'p1', { age: ['18-29'] }, 0.25);
 			const cy = ctxOf(basis, rs, yp.map((p) => (p.id === 'p1' ? { ...p, appeals: [{ filter: { age: ['18-29'] }, points: f2.points }] } : p)));
 			near(cy.sim.group({ age: ['18-29'] }).shares.p1, 0.25, 0.002, 'fit a new party to 25% of 18-29');
@@ -160,7 +167,7 @@ try {
 
 			// 6. turnout scales voters
 			const seg = (f, turnout) => ({ id: 'c1', filter: f, turnout });
-			const ct = ctxOf(basis, rs, core, 0, [seg({ age: ['18-29'] }, 20)]);
+			const ct = ctxOf(basis, rs, core, [seg({ age: ['18-29'] }, 20)]);
 			const r0 = rs[0], rb0 = basis.regions.get(r0.id);
 			let V = 0, Y = 0;
 			for (let c = 0; c < n; c++) { V += rb0.V[c]; if (basis.labels[c].age === '18-29') Y += Math.min(rb0.V[c] * 1.2, Math.max(rb0.V[c], rb0.C[c] * 0.995)); }
@@ -195,14 +202,14 @@ try {
 			assert.equal(th.mmp.list.p1, 0, 'under the threshold: no list seats');
 
 			// residuals: vote-weighted mean 0
-			const res = rs.map((r) => M.residualPoints(basis.regions.get(r.id)));
+			const res = rs.map((r) => M.unexplained(basis.regions.get(r.id)).D);
 			console.log(`${id} ${eid}: fit ${fitMs.toFixed(0)}ms | D ${t0s.seats.D} R ${t0s.seats.R} | preset: ` +
 				Object.entries(tm.seats).map(([k, n]) => `${parties.find((q) => q.id === k).name} ${n}`).join(', ') +
 				` | MMP: ${Object.entries(tl.seats).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(' ')} of ${tl.total} | D +5 among 18-29 -> D ${S.tally(rs, cs).seats.D} | demographics only: D ${tDemo.seats.D} R ${tDemo.seats.R} (D ${(demoPopular * 100).toFixed(1)}%) | residual sd ${Math.sqrt(res.reduce((a, x) => a + x * x, 0) / res.length).toFixed(1)} pts`);
 
 			// overrides: an override for an inactive party is ignored
-			assert.equal(S.outcome(r0, ctxOf(basis, rs, core, 0, [], { [r0.id]: { p: 'p2', l: 4 } })).manual, false);
-			assert.equal(S.outcome(r0, ctxOf(basis, rs, parties, 0, [], { [r0.id]: { p: 'p2', l: 4 } })).winner, 'p2');
+			assert.equal(S.outcome(r0, ctxOf(basis, rs, core, [], { [r0.id]: { p: 'p2', l: 4 } })).manual, false);
+			assert.equal(S.outcome(r0, ctxOf(basis, rs, parties, [], { [r0.id]: { p: 'p2', l: 4 } })).winner, 'p2');
 		}
 	}
 
@@ -219,14 +226,14 @@ try {
 			const c = r.cells;
 			const L = labels.map((_, i) => (c[n + i] - c[2 * n + i]) * lRate[i]);
 			results[r.id] = [...c.slice(0, 3 * n), ...L];
-			const Ltot = L.reduce((a, b) => a + b, 0), D = r.demShare * r.votes;
+			const Ltot = L.reduce((a, b) => a + b, 0), D = r.baseline.D;
 			base[r.id] = { D, L: Ltot, R: r.votes - D - Ltot };
 		}
 		const cells3 = { ...el.cells, parties: ['D', 'L', 'R'], results };
 		const regions = map.regions.map((r) => ({ ...r, cells: results[r.id], baseline: base[r.id] }));
 		const b3 = M.fitBasis(regions, cells3);
 		assert.deepEqual(b3.parties, ['D', 'L', 'R']);
-		const sim3 = M.simulate(b3, regions, { swing: 0, segments: [], parties: core });
+		const sim3 = M.simulate(b3, regions, { segments: [], parties: core });
 		for (const r of regions) {
 			const sh = sim3.shares.get(r.id);
 			for (const q of ['D', 'L', 'R']) near(sh[q], base[r.id][q] / r.votes, 1e-7, `${r.id}: 3-party district ${q}`);
@@ -236,7 +243,7 @@ try {
 			for (const q of ['D', 'L', 'R']) near(g.shares[q], g.before.shares[q], 1e-6, `3-party national ${q} among ${JSON.stringify(f)}`);
 		}
 		// appeals and extras work against any baseline party
-		const sc3 = { swing: 0, segments: [], parties: [...core, party({ share: 5, fromD: 50 })] };
+		const sc3 = { segments: [], parties: [...core, party({ share: 5 })] };
 		const fR = M.fitAppeal(b3, regions, sc3, 'R', { sex: ['Men'] }, 0.5);
 		const s3 = M.simulate(b3, regions, { ...sc3, parties: sc3.parties.map((p) => (p.id === 'R' ? { ...p, appeals: [{ filter: { sex: ['Men'] }, points: fR.points }] } : p)) });
 		near(s3.group({ sex: ['Men'] }).shares.R, 0.5, 0.002, '3-party: R fitted to 50% of men');
@@ -250,15 +257,16 @@ try {
 		const map = load('us-house-current', 'pres-2020');
 		const plain = map.regions.map(({ cells, ...r }) => r);
 		const basis = M.fitBasis(plain, undefined);
-		const rs = plain.filter((r) => r.demShare !== null);
-		const c = ctxOf(basis, rs, core, 3);
-		for (const r of rs) near(S.shares(r, c).D, Math.min(1, r.demShare + 0.015), 1e-8, 'no-cells two-party');
+		const rs = plain.filter((r) => r.baseline);
+		const c = ctxOf(basis, rs, core);
+		for (const r of rs) near(S.shares(r, c).D, real(r), 1e-8, 'no-cells: real result');
 		const cp = ctxOf(basis, rs, P.presetParties(core));
 		assert.ok(rs.every((r) => Math.abs(Object.values(S.shares(r, cp)).reduce((a, b) => a + b, 0) - 1) < 1e-9), 'no-cells preset sums to 1');
 	}
 
 	// legacy party links: a single `audience` becomes one appeal
-	const leg = P.sanitizeParties([...P.coreParties(), { id: 'p1', name: 'Y', share: 25, fromD: 50, states: [], audience: { age: ['18-29'] } }]);
+	const leg = P.sanitizeParties([...P.coreParties(), { id: 'p1', name: 'Y', share: 25, fromD: 70, states: [], audience: { age: ['18-29'] } }]);
+	assert.deepEqual(leg[2].pulls, { D: 70, R: 30 }, 'older D-vs-R slider becomes pulls');
 	assert.deepEqual(leg[2].appeals, [{ filter: { age: ['18-29'] }, points: 0, target: 25 }], 'legacy audience -> a target to fit');
 	const leg2 = P.sanitizeParties([...P.coreParties(), { id: 'p1', name: 'Y', share: 5, fromD: 50, states: [], appeals: [{ filter: { race: ['Hispanic'] }, share: 30 }, { filter: {}, points: 4 }, { filter: { planet: 'x' }, points: 3 }] }]);
 	assert.deepEqual(leg2[2].appeals, [{ filter: { race: ['Hispanic'] }, points: 0, target: 30 }, { filter: {}, points: 4 }], 'targets kept for fitting; points kept; malformed dropped');
@@ -278,11 +286,12 @@ try {
 	assert.deepEqual(sw.swing.segments[1].filter, {}, 'unknown group dropped from filter');
 
 	// 5. untrusted party configs
-	assert.equal(P.sanitizeParties([{ id: 'D' }]), null, 'needs D and R');
+	assert.equal(P.sanitizeParties([{ id: 'D' }])?.[0].core, true, 'any party of the data is core');
+	assert.equal(P.sanitizeParties([{ id: 'p7' }])?.[0].core, false, 'added parties are not');
 	assert.equal(P.sanitizeParties([...P.coreParties(), { id: '<img>', name: 'x' }]), null, 'bad id');
 	const s = P.sanitizeParties([...P.coreParties(), { id: 'p1', name: 'x'.repeat(99), color: 'red;background:url(x)', share: 999, fromD: -5, states: ['TX', '"><script>'] }]);
 	assert.equal(s[2].color, '#888888'); assert.equal(s[2].name.length, 40); assert.equal(s[2].share, 60);
-	assert.equal(s[2].fromD, 0); assert.deepEqual(s[2].states, ['TX']);
+	assert.deepEqual(s[2].pulls, { D: 0, R: 100 }); assert.deepEqual(s[2].states, ['TX']);
 
 	// 6. import path
 	const fc = { type: 'FeatureCollection', features: [{ type: 'Feature', properties: { GEOID: 'x', NAME: 'X', G20PREDBID: 10, G20PRERTRU: 5 }, geometry: { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]] } }] };
@@ -290,7 +299,7 @@ try {
 	assert.equal(g.manifest.idProperty, 'GEOID');
 	assert.equal(g.dem, 'G20PREDBID');
 	const m = L.buildMap(g.manifest, fc, { voteProps: { dem: g.dem, rep: g.rep } });
-	near(m.regions[0].demShare, 2 / 3, 1e-9, 'import share');
+	near(real(m.regions[0]), 2 / 3, 1e-9, 'import share');
 	assert.throws(() => L.parseGeo('{"type":"Nope"}'));
 	console.log('smoke OK');
 } finally {

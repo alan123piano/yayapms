@@ -24,9 +24,11 @@ export function ratingText(o: Outcome, byId: Record<string, Party>): string {
 	return `${RATING_NAMES[o.level]} ${byId[o.winner]?.name ?? o.winner}`;
 }
 
-/** Residual mode: D color for districts more D than their demographics, R color for more R. */
-export function residualFill(points: number, byId: Record<string, Party>): string {
-	const c = (points >= 0 ? byId.D?.color : byId.R?.color) ?? '#888888';
-	const k = GRADIENT_MIN_STRENGTH + (100 - GRADIENT_MIN_STRENGTH) * Math.min(1, Math.abs(points) / RESIDUAL_FULL_AT);
+/** Unexplained mode: the color of the party the district backs most beyond what the model
+ *  explains, stronger the bigger that gap (points of vote share). */
+export function residualFill(gap: Record<string, number>, byId: Record<string, Party>): string {
+	const [id, pts] = Object.entries(gap).sort((a, b) => b[1] - a[1])[0] ?? ['', 0];
+	const c = byId[id]?.color ?? '#888888';
+	const k = GRADIENT_MIN_STRENGTH + (100 - GRADIENT_MIN_STRENGTH) * Math.min(1, Math.max(0, pts) / RESIDUAL_FULL_AT);
 	return `color-mix(in oklab, ${c} ${k}%, var(--mix-base))`;
 }

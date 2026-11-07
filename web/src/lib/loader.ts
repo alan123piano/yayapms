@@ -90,7 +90,6 @@ export function buildMap(manifest: MapManifest, fc: FeatureCollection<Geometry>,
 			label: String(manifest.labelProperty ? p[manifest.labelProperty] ?? id : id),
 			group: String(manifest.groupProperty ? p[manifest.groupProperty] ?? '' : ''),
 			seats: Number.isFinite(seats) && seats >= 0 ? seats : 1,
-			demShare: null,
 			votes: 0,
 			feature: f
 		};
@@ -100,17 +99,30 @@ export function buildMap(manifest: MapManifest, fc: FeatureCollection<Geometry>,
 	return withElection({ manifest, regions, collection: fc, elections, report: opts.report, borders: opts.borders, local: opts.local }, elections[0]?.id);
 }
 
-/** The same map with each region's demShare/votes taken from the given election (null if absent). */
+/** An election's parties, in order: as declared, else as listed in its cells, else as they
+ *  appear in its results. */
+export function electionParties(el: Election | undefined): string[] {
+	if (!el) return [];
+	if (el.parties?.length) return el.parties;
+	if (el.cells?.parties?.length) return el.cells.parties;
+	const seen = new Set<string>();
+	for (const v of Object.values(el.results)) for (const p of Object.keys(v ?? {})) seen.add(p);
+	return [...seen];
+}
+
+/** The same map with each region's votes per party taken from the given election (none if absent). */
 export function withElection(m: LoadedMap, electionId: string | undefined): LoadedMap {
 	const el = m.elections.find((e) => e.id === electionId);
+	const parties = electionParties(el);
 	return {
 		...m,
 		regions: m.regions.map((r) => {
 			const v = el?.results[r.id];
-			const d = Number(v?.D), rep = Number(v?.R);
-			const ok = Number.isFinite(d) && Number.isFinite(rep) && d >= 0 && rep >= 0 && d + rep > 0;
-			const baseline = ok ? Object.fromEntries((el?.cells?.parties ?? ['D', 'R']).map((p) => [p, Math.max(0, Number(v?.[p]) || 0)])) : undefined;
-			return { ...r, demShare: ok ? d / (d + rep) : null, votes: ok ? d + rep : 0, cells: ok ? el?.cells?.results[r.id] : undefined, baseline };
+			const votes = parties.map((p) => Number(v?.[p]));
+			const ok = !!v && votes.every((x) => Number.isFinite(x) && x >= 0) && votes.some((x) => x > 0);
+			const baseline = ok ? Object.fromEntries(parties.map((p, k) => [p, votes[k]])) : undefined;
+			const total = ok ? votes.reduce((a, b) => a + b, 0) : 0;
+			return { ...r, votes: total, cells: ok ? el?.cells?.results[r.id] : undefined, baseline };
 		})
 	};
 }

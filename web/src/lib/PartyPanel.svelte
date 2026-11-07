@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { MAX_PARTIES, NEW_PARTY_COLORS } from './config';
-	import type { Simulation } from './model';
+	import { pullsOf, type Simulation } from './model';
 	import { nextPartyId, presetParties } from './parties';
 	import Scrubber, { stepped } from './Scrubber.svelte';
 	import type { Party } from './types';
@@ -25,8 +25,10 @@
 	}
 
 	let extras = $derived(parties.filter((p) => !p.core));
-	let dParty = $derived(parties.find((p) => p.id === 'D'));
-	let rParty = $derived(parties.find((p) => p.id === 'R'));
+	/** the parties of the election's data, which added parties pull voters from */
+	let base = $derived(sim?.baselineParties ?? parties.filter((p) => p.core).map((p) => p.id));
+	const nameOf = (id: string) => parties.find((p) => p.id === id)?.name ?? id;
+	const colorOf = (id: string) => parties.find((p) => p.id === id)?.color;
 	let totalShare = $derived(extras.filter((p) => !p.states.length).reduce((a, p) => a + p.share, 0));
 
 	function add() {
@@ -36,7 +38,6 @@
 			name: 'New party',
 			color: NEW_PARTY_COLORS.find((c) => !used.has(c)) ?? '#888888',
 			share: 10,
-			fromD: 50,
 			states: [],
 			appeals: []
 		});
@@ -57,13 +58,15 @@
 			.filter((s) => s && groups.includes(s));
 	}
 
-	const DRAW = stepped(0, 100, 5);
-	const drawTick = (fromD: number) =>
-		fromD === 50 ? 'even' : `all ${(fromD > 50 ? dParty?.name : rParty?.name) ?? (fromD > 50 ? 'D' : 'R')}`;
-
-	function drawLabel(fromD: number) {
-		if (fromD >= 50) return `${fromD}% from ${dParty?.name ?? 'D'}`;
-		return `${100 - fromD}% from ${rParty?.name ?? 'R'}`;
+	const PULL = stepped(0, 100, 5);
+	/** each data party's weight as a share of all of them: how the party's pull is split */
+	function split(p: Party): Record<string, number> {
+		const w = pullsOf(p, base);
+		const W = base.reduce((a, id) => a + w[id], 0) || 1;
+		return Object.fromEntries(base.map((id) => [id, Math.round((w[id] / W) * 100)]));
+	}
+	function setPull(p: Party, id: string, v: number) {
+		p.pulls = { ...pullsOf(p, base), [id]: v };
 	}
 </script>
 
@@ -81,10 +84,17 @@
 					<span title="Its share where it runs, before group appeals, if it pulled evenly from both sides">Base share <b>{p.share}%</b>{shareLabel(p)} <span class="muted">(now {now(p)}%)</span></span>
 					<Scrubber bind:value={p.share} stops={SHARE} ticks={SHARE_TICKS} labels={[0, 25, 50]} format={fmtPct} />
 				</label>
-				<label>
-					<span title="How much more strongly it attracts one side's voters than the other's">Pulls <b>{drawLabel(p.fromD)}</b></span>
-					<Scrubber bind:value={p.fromD} stops={DRAW} labels={[0, 50, 100]} format={drawTick} origin={50} />
-				</label>
+				<div class="pulls" title="How strongly it attracts each party's voters, relative to each other (equal = evenly)">
+					<span class="muted small">Pulls voters from</span>
+					{#each base as id (id)}
+						{@const sp = split(p)}
+						<label>
+							<span><span class="swatch sm" style:background={colorOf(id)}></span>{nameOf(id)} <b>{sp[id]}%</b></span>
+							<Scrubber value={pullsOf(p, base)[id]} stops={PULL} labels={[0, 50, 100]} format={(x) => String(x)}
+								aria-label="{p.name} pulls from {nameOf(id)}" onchange={(v) => setPull(p, id, v)} />
+						</label>
+					{/each}
+				</div>
 				<label>
 					<span>Runs in</span>
 					<input
@@ -109,8 +119,8 @@
 {/if}
 {#if extras.length}
 	<p class="muted small">
-		A new party wins over each side's voters at the same rate in every district where it runs, so
-		it is strongest where the side it pulls from is. Its appeals to voter groups are set in Voter
+		A new party wins over each party's voters at the same rate in every district where it runs,
+		so it is strongest where the parties it pulls from are. Its appeals to voter groups are set in Voter
 		groups, and Vote by group shows where every party ends up.
 	</p>
 {/if}
@@ -162,6 +172,16 @@
 	}
 	.hint {
 		margin: 6px 0 0;
+	}
+	.pulls {
+		margin-top: 8px;
+	}
+	.pulls label {
+		margin-top: 2px;
+	}
+	.pulls .swatch {
+		margin-right: 4px;
+		vertical-align: middle;
 	}
 	.actions {
 		display: flex;

@@ -11,15 +11,13 @@
 
 	let ranked = $derived(rankParties(t, parties));
 	let majority = $derived(Math.floor(t.total / 2) + 1);
-	let rColor = $derived(parties.find((p) => p.id === 'R')?.color);
 </script>
 
 <div class="seatbar" role="img" aria-label={ranked.map((x) => `${x.n} ${x.p.name}`).join(', ')}>
 	{#each spectrumOrder(parties) as p (p.id)}
-		{#if p.id !== 'R'}<div style:flex-grow={t.seats[p.id] ?? 0} style:background={p.color}></div>{/if}
+		<div style:flex-grow={t.seats[p.id] ?? 0} style:background={p.color}></div>
 	{/each}
 	<div style:flex-grow={t.unrated} style:background="var(--unrated)"></div>
-	<div style:flex-grow={t.seats.R ?? 0} style:background={rColor}></div>
 	<span class="majority" style:left="{(majority / t.total) * 100}%"></span>
 </div>
 <p class="status">{majorityStatus(t, parties)}</p>

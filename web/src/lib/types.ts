@@ -30,8 +30,10 @@ export interface MapManifest {
 export interface ElectionRef {
 	id: string;
 	label: string;
-	/** JSON file relative to the manifest: {"results": {regionId: {"D": votes, "R": votes, ...}}} */
+	/** JSON file relative to the manifest: {"results": {regionId: {party: votes, ...}}} */
 	file: string;
+	/** the election's parties, in order (default: the parties in its results) */
+	parties?: string[];
 	candidates?: Record<string, string>;
 	source?: string;
 	/** attribution that must be shown when displayed */
@@ -69,13 +71,11 @@ export interface Region {
 	label: string;
 	group: string;
 	seats: number;
-	/** two-party Dem share 0..1 in the selected election, or null if no result */
-	demShare: number | null;
-	/** two-party votes in the selected election (weights for averages); 0 if unknown */
+	/** votes for the selected election's parties (weights for averages); 0 if no result */
 	votes: number;
 	/** demographic cells for the selected election, if available */
 	cells?: number[];
-	/** votes per party of the selected election that the vote model starts from (CellData.parties) */
+	/** votes per party of the selected election (its parties: loader.electionParties); absent if no result */
 	baseline?: Record<string, number>;
 	feature: Feature<Geometry>;
 }
@@ -101,16 +101,17 @@ export interface Appeal {
 }
 
 export interface Party {
-	/** 'D' and 'R' are the core parties; extras get ids like 'p1' */
+	/** parties of an election's data have its ids (e.g. "D", "R"); added ones "p1", "p2", ... */
 	id: string;
 	name: string;
 	color: string;
+	/** a party of the elections' data (its votes come from real results); others are added */
 	core?: boolean;
-	/** extras only: base vote share in %, where it runs: exact with neutral pulls and no appeals */
+	/** added parties: base vote share in %, where it runs: exact with even pulls and no appeals */
 	share: number;
-	/** extras only: "pulls from", 0..100: how much more it attracts D voters (100) or R voters
-	 *  (0) than the other side's; 50 = evenly */
-	fromD: number;
+	/** added parties: "pulls from", relative weight 0..100 per party of the election's data
+	 *  (how strongly it attracts that party's voters); missing or equal weights = evenly */
+	pulls?: Record<string, number>;
 	/** extras only: groups (states) it contests; empty = everywhere */
 	states: string[];
 	/** its appeal in voter groups */

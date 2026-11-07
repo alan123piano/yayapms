@@ -8,23 +8,30 @@
 	}
 	let { fit, parties }: Props = $props();
 
-	let dColor = $derived(parties.find((p) => p.id === 'D')?.color);
-	let rColor = $derived(parties.find((p) => p.id === 'R')?.color);
-	/** the strongest local factors, by size of effect */
-	let effects = $derived([...(fit.local?.effects ?? [])].sort((a, b) => Math.abs(b.points) - Math.abs(a.points)).slice(0, 8));
-	let maxEffect = $derived(Math.max(1, ...effects.map((e) => Math.abs(e.points))));
-	const fmt = (x: number) => `${x > 0 ? 'D' : 'R'}+${Math.abs(x).toFixed(1)}`;
+	const colorOf = (id: string) => parties.find((p) => p.id === id)?.color;
+	const nameOf = (id: string) => parties.find((p) => p.id === id)?.name ?? id;
+	/** each factor's strongest effect: the party it helps most, in points of vote share */
+	let effects = $derived(
+		(fit.local?.effects ?? [])
+			.map((e) => {
+				const [party, points] = Object.entries(e.byParty).sort((a, b) => b[1] - a[1])[0] ?? ['', 0];
+				return { ...e, party, points };
+			})
+			.sort((a, b) => b.points - a.points)
+			.slice(0, 8)
+	);
+	let maxEffect = $derived(Math.max(0.5, ...effects.map((e) => e.points)));
 </script>
 
 <p class="muted small">
-	How far districts' real results are from what each layer explains (spread of the D–R margin
-	gap across districts, vote-weighted):
+	How far districts' real results still are from what the layers explain (points of vote share,
+	typical district and party):
 </p>
 <table>
 	<tbody>
 		{#each fit.spread as s (s.id)}
 			<tr>
-				<th>+ {s.id === 'unexplained' ? '' : STAGE_LABELS[s.id]}</th>
+				<th>+ {STAGE_LABELS[s.id]}</th>
 				<td>{s.points.toFixed(1)} pts left</td>
 			</tr>
 		{/each}
@@ -33,14 +40,15 @@
 {#if fit.local}
 	<p class="muted small">
 		Local factors explain {Math.round(fit.local.r2 * 100)}% of the gap between districts of the same
-		state (cross-validated). Strongest, per standard deviation of the factor within a state:
+		state (cross-validated). Strongest, per standard deviation of the factor within a state, with the
+		party it helps:
 	</p>
 	<ul class="effects">
 		{#each effects as e (e.id)}
 			<li>
 				<span class="label" title={e.label}>{e.label}</span>
-				<span class="bar"><span style:width="{(Math.abs(e.points) / maxEffect) * 100}%" style:background={e.points > 0 ? dColor : rColor}></span></span>
-				<span class="num">{fmt(e.points)}</span>
+				<span class="bar"><span style:width="{(e.points / maxEffect) * 100}%" style:background={colorOf(e.party)}></span></span>
+				<span class="num" title={nameOf(e.party)}>+{e.points.toFixed(1)}</span>
 			</li>
 		{/each}
 	</ul>

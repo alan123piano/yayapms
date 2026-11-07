@@ -2,11 +2,6 @@ import { RATING_THRESHOLDS as T } from './config';
 import { simulate, type Basis, type Scenario, type Simulation } from './model';
 import type { Level, Outcome, Override, Party, Region } from './types';
 
-/** Two-party Dem margin in points after a uniform swing (swing in points, + = toward D). */
-export function margin(demShare: number, swing: number): number {
-	return (2 * demShare - 1) * 100 + swing;
-}
-
 export function levelFromMargin(m: number): Level {
 	const a = Math.abs(m);
 	return a < T[0] ? 1 : a < T[1] ? 2 : a < T[2] ? 3 : 4;
@@ -154,23 +149,6 @@ export function tally(regions: Region[], ctx: SimContext, system: SeatSystem = F
 		total,
 		mmp: { districts, list, vote, eligible, extra: total - t.unrated - base }
 	};
-}
-
-/** Two-party only: smallest uniform swing (0.1 pt) giving D a majority, or null within ±40. */
-export function tippingSwing(regions: Region[], ctx: SimContext): number | null {
-	const leans = regions.flatMap((r) => {
-		const l = ctx.sim?.lean.get(r.id);
-		return l === undefined ? [] : [{ l, seats: r.seats }];
-	});
-	const total = leans.reduce((s, x) => s + x.seats, 0);
-	if (!total) return null;
-	const need = Math.floor(total / 2) + 1;
-	for (let s = -400; s <= 400; s++) {
-		const sw = s / 10;
-		const d = leans.reduce((acc, x) => acc + (margin(x.l, sw) > 0 ? x.seats : 0), 0);
-		if (d >= need) return sw;
-	}
-	return null;
 }
 
 /** Parties with their seat counts, most seats first. */
