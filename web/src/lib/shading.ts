@@ -1,5 +1,5 @@
 import {
-	GRADIENT_FULL_AT, GRADIENT_MIN_STRENGTH, RESIDUAL_FULL_AT, TIER_STRENGTH, TIER_TYPICAL_MARGIN, type ShadingId
+	GRADIENT_FULL_AT, GRADIENT_MIN_STRENGTH, RESIDUAL_FULL_AT, TIER_STRENGTH, type ShadingId
 } from './config';
 import { RATING_NAMES, type Outcome, type Party } from './types';
 
@@ -7,8 +7,7 @@ import { RATING_NAMES, type Outcome, type Party } from './types';
 export function strength(o: Outcome, mode: ShadingId): number {
 	if (mode === 'solid') return 100;
 	if (mode === 'tiers' || mode === 'residual') return TIER_STRENGTH[o.level];
-	const m = o.margin ?? TIER_TYPICAL_MARGIN[o.level];
-	return GRADIENT_MIN_STRENGTH + (100 - GRADIENT_MIN_STRENGTH) * Math.min(1, Math.abs(m) / GRADIENT_FULL_AT);
+	return GRADIENT_MIN_STRENGTH + (100 - GRADIENT_MIN_STRENGTH) * Math.min(1, Math.abs(o.margin ?? 0) / GRADIENT_FULL_AT);
 }
 
 /** CSS fill for a result: the winner's color faded toward --mix-base, or the unrated color. */

@@ -1,6 +1,6 @@
 import { RATING_THRESHOLDS as T } from './config';
 import { simulate, type Basis, type Scenario, type Simulation } from './model';
-import type { Level, Outcome, Override, Party, Region } from './types';
+import type { Level, Outcome, Party, Region } from './types';
 
 export function levelFromMargin(m: number): Level {
 	const a = Math.abs(m);
@@ -9,7 +9,6 @@ export function levelFromMargin(m: number): Level {
 
 export interface SimContext {
 	parties: Party[];
-	overrides: Record<string, Override>;
 	sim: Simulation | null;
 }
 
@@ -17,35 +16,23 @@ export interface SimContext {
 export function buildContext(
 	basis: Basis | undefined,
 	regions: Region[],
-	scenario: Scenario,
-	overrides: Record<string, Override>
+	scenario: Scenario
 ): SimContext {
-	return { parties: scenario.parties, overrides, sim: basis ? simulate(basis, regions, scenario) : null };
+	return { parties: scenario.parties, sim: basis ? simulate(basis, regions, scenario) : null };
 }
 
 export function shares(r: Region, ctx: SimContext): Record<string, number> | null {
 	return ctx.sim?.shares.get(r.id) ?? null;
 }
 
-const UNRATED: Outcome = { winner: null, level: 1, unrated: true, manual: false, shares: null, margin: null };
+const UNRATED: Outcome = { winner: null, level: 1, unrated: true, shares: null, margin: null };
 
 export function outcome(r: Region, ctx: SimContext): Outcome {
 	const sh = shares(r, ctx);
-	const ov = ctx.overrides[r.id];
-	if (ov && ctx.parties.some((p) => p.id === ov.p)) {
-		return {
-			winner: ov.p,
-			level: ov.l,
-			unrated: false,
-			manual: true,
-			shares: sh,
-			margin: null
-		};
-	}
 	if (!sh) return UNRATED;
 	const ranked = Object.entries(sh).sort((a, b) => b[1] - a[1]);
 	const m = (ranked[0][1] - (ranked[1]?.[1] ?? 0)) * 100;
-	return { winner: ranked[0][0], level: levelFromMargin(m), unrated: false, manual: false, shares: sh, margin: m };
+	return { winner: ranked[0][0], level: levelFromMargin(m), unrated: false, shares: sh, margin: m };
 }
 
 export interface Tally {
@@ -107,22 +94,30 @@ export function sainteLague(votes: Record<string, number>, seats: number): Recor
 	return out;
 }
 
+/** Simulated votes per party over these regions (`sincere`: before any tactical voting). */
+export function popularVote(
+	regions: Region[], ctx: SimContext, sincere = false
+): { raw: Record<string, number>; shares: Record<string, number>; total: number } {
+	const raw: Record<string, number> = Object.fromEntries(ctx.parties.map((p) => [p.id, 0]));
+	const by = (sincere && ctx.sim?.sincere) || ctx.sim?.shares;
+	let total = 0;
+	for (const r of regions) {
+		const sh = by?.get(r.id);
+		const v = ctx.sim?.votes.get(r.id) ?? 0;
+		if (!sh) continue;
+		for (const [id, x] of Object.entries(sh)) if (id in raw) raw[id] += v * x;
+		total += v;
+	}
+	return { raw, shares: Object.fromEntries(Object.entries(raw).map(([id, v]) => [id, total ? v / total : 0])), total };
+}
+
 export function tally(regions: Region[], ctx: SimContext, system: SeatSystem = FPTP): Tally {
 	const t = districtTally(regions, ctx);
 	if (system.kind === 'fptp') return t;
 
-	// national list vote: simulated votes over the regions in scope, as cast before any tactical
-	// voting (the list vote decides nothing locally, so nobody votes tactically in it)
-	const raw: Record<string, number> = Object.fromEntries(ctx.parties.map((p) => [p.id, 0]));
-	let all = 0;
-	for (const r of regions) {
-		const sh = (ctx.sim?.sincere ?? ctx.sim?.shares)?.get(r.id);
-		const v = ctx.sim?.votes.get(r.id) ?? 0;
-		if (!sh) continue;
-		for (const [id, x] of Object.entries(sh)) if (id in raw) raw[id] += v * x;
-		all += v;
-	}
-	const vote = Object.fromEntries(Object.entries(raw).map(([id, v]) => [id, all ? v / all : 0]));
+	// national list vote, as cast before any tactical voting (the list vote decides nothing
+	// locally, so nobody votes tactically in it)
+	const { raw, shares: vote } = popularVote(regions, ctx, true);
 	const districts = { ...t.seats };
 	const eligible = ctx.parties
 		.map((p) => p.id)

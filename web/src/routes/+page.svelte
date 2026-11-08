@@ -17,7 +17,7 @@
 	import Tooltip from '#lib/Tooltip.svelte';
 	import VoteMatrix from '#lib/VoteMatrix.svelte';
 	import {
-		DEFAULT_BRUSH, DEFAULT_ELECTION, DEFAULT_SHADING, DEMO_DIM_LABELS, DEMO_LIMITS, SHADINGS,
+		DEFAULT_ELECTION, DEFAULT_SHADING, DEMO_DIM_LABELS, DEMO_LIMITS, SHADINGS,
 		type ShadingId
 	} from '#lib/config.ts';
 	import { describe, emptySwing, filterKey, isActive, sanitizeSwing, type GroupOption } from '#lib/demographics.ts';
@@ -25,8 +25,8 @@
 	import { BASELINE_VARIANTS, baselineFor, fitAppeal, fitBasis, unexplained, type Basis, type BaselineVariant, type Scenario } from '#lib/model.ts';
 	import { coreParties, sanitizeParties, withElectionParties } from '#lib/parties.ts';
 	import { outcomeFill, residualFill } from '#lib/shading.ts';
-	import { buildContext, FPTP, outcome, tally, type SeatSystem } from '#lib/sim.ts';
-	import type { Level, LoadedMap, Override, Party, Region, StateReport } from '#lib/types.ts';
+	import { buildContext, FPTP, outcome, popularVote, tally, type SeatSystem } from '#lib/sim.ts';
+	import type { LoadedMap, Party, Region, StateReport } from '#lib/types.ts';
 
 	// ---------- app state ----------
 	let index = $state<{ id: string; name: string }[]>([]);
@@ -43,12 +43,8 @@
 	let seatSystem = $state<SeatSystem>(FPTP);
 	/** voters of trailing parties partly switch to a viable party they like */
 	let tactical = $state(false);
-	/** manual ratings per map id, then region id */
-	let overrides = $state<Record<string, Record<string, Override>>>({});
 	let focusGroup = $state<string | null>(null);
 	let shading = $state<ShadingId>(DEFAULT_SHADING);
-	/** paint brush: a party id or 'auto' */
-	let brush = $state(DEFAULT_BRUSH);
 	let hover = $state<{ r: Region; x: number; y: number } | null>(null);
 	let importing = $state(false);
 	let error = $state('');
@@ -132,9 +128,19 @@
 			: 'Baseline'
 	);
 	let byId = $derived(Object.fromEntries(parties.map((p) => [p.id, p])) as Record<string, Party>);
-	let ov = $derived(overrides[currentId] ?? {});
-	let ctx = $derived(map ? buildContext(bases[currentId], map.regions, scenario, ov) : null);
+	let ctx = $derived(map ? buildContext(bases[currentId], map.regions, scenario) : null);
 	let t = $derived(map && ctx ? tally(map.regions, ctx, seatSystem) : null);
+	/** the national vote: the list vote under MMP (cast before any tactical voting) */
+	let vote = $derived(map && ctx ? popularVote(map.regions, ctx, seatSystem.kind === 'mmp') : null);
+	/** the election's own parties, unedited: re-run only when that list changes */
+	let coreKey = $derived(parties.filter((p) => p.core).map((p) => p.id).join());
+	/** the baseline election with no edits, for the results' changes */
+	let before = $derived.by(() => {
+		if (!map || !bases[currentId]) return null;
+		const core = coreKey.split(',').filter(Boolean).map((id) => ({ id, name: id, color: '', core: true, share: 0, states: [], appeals: [] }));
+		const c = buildContext(bases[currentId], map.regions, { segments: [], parties: core });
+		return { tally: tally(map.regions, c, seatSystem), vote: popularVote(map.regions, c).shares };
+	});
 	let groups = $derived(map ? [...new Set(map.regions.map((r) => r.group).filter(Boolean))].sort() : []);
 	let hasBaseline = $derived(!!map?.regions.some((r) => r.baseline));
 
@@ -169,11 +175,6 @@
 	let report = $derived(
 		focusGroup && map?.report ? (map.report as Record<string, StateReport>)[focusGroup] : undefined
 	);
-
-	// keep the brush valid when parties change
-	$effect(() => {
-		if (brush !== 'auto' && !parties.some((p) => p.id === brush)) brush = 'auto';
-	});
 
 	// ---------- layout: map takes the window height left after the rows around it ----------
 	let headerH = $state(56);
@@ -216,10 +217,8 @@
 	const STORAGE_KEY = 'yayapms.parties.v2';
 
 	function encodeHash(): string {
-		const o = Object.entries(ov).map(([k, v]) => `${k}:${v.p}${v.l}`).join(',');
 		const p = new URLSearchParams({ map: currentId, election });
 		if (variant !== 'real') p.set('baseline', variant);
-		if (o) p.set('o', o);
 		if (focusGroup) p.set('focus', focusGroup);
 		if (seatSystem.kind === 'mmp') {
 			const m = seatSystem;
@@ -229,11 +228,6 @@
 		if (parties.length > 2 || parties.some((x) => x.appeals.length)) p.set('parties', JSON.stringify(parties.map(({ core, ...rest }) => rest)));
 		if (isActive(demoSwing)) p.set('groups', JSON.stringify(demoSwing));
 		return p.toString();
-	}
-
-	function parseOverride(v: string): Override | null {
-		const m = v.match(/^(D|R|p\d{1,3})([1-4])$/);
-		return m ? { p: m[1], l: Number(m[2]) as Level } : null;
 	}
 
 	/** voter-group swing from the hash; validated once the maps (and their groups) are loaded */
@@ -249,13 +243,6 @@
 		const bv = p.get('baseline');
 		variant = BASELINE_VARIANTS.some((x) => x.id === bv) ? (bv as BaselineVariant) : 'real';
 		const id = p.get('map');
-		const o: Record<string, Override> = {};
-		for (const part of (p.get('o') ?? '').split(',').filter(Boolean)) {
-			const i = part.lastIndexOf(':');
-			const v = i > 0 ? parseOverride(part.slice(i + 1)) : null;
-			if (v) o[part.slice(0, i)] = v;
-		}
-		if (id) overrides[id] = o;
 		focusGroup = p.get('focus');
 		const seats = (p.get('seats') ?? '').match(/^mmp:(\d{1,3}):(\d{1,2}(?:\.\d)?):(\d{1,2}):(keep|level)$/);
 		if (seats) {
@@ -346,24 +333,6 @@
 		return true;
 	}
 
-	// ---------- painting ----------
-	function setOverride(id: string, v: Override | null) {
-		const next = { ...ov };
-		if (v === null) delete next[id];
-		else next[id] = v;
-		overrides[currentId] = next;
-	}
-
-	/** Left click paints with the brush; clicking the same party again steps Safe→Likely→Lean→Tilt→Safe.
-	 *  Right click returns the region to auto (the simulated result). */
-	function pick(r: Region, secondary: boolean) {
-		if (!ctx) return;
-		if (secondary || brush === 'auto') return setOverride(r.id, null);
-		const cur = outcome(r, ctx);
-		const level = cur.winner === brush ? cur.level : 0;
-		setOverride(r.id, { p: brush, l: (level <= 1 ? 4 : level - 1) as Level });
-	}
-
 	function fill(r: Region): string {
 		if (shading === 'residual') {
 			const rb = fitted[currentId]?.regions.get(r.id);
@@ -394,32 +363,28 @@
 <main style:--header-h="{headerH}px" style:--map-chrome="{mapChrome}px">
 	<section class="map">
 		{#if map}
-			<Legend {parties} tally={t} {hasBaseline} bind:brush bind:height={legendH} />
+			<Legend {parties} tally={t} bind:height={legendH} />
 			<MapView
 				{map}
 				{fill}
 				{focusGroup}
-				onpick={pick}
 				onhover={(r, x, y) => (hover = r ? { r, x, y } : null)}
 				onunfocus={() => (focusGroup = null)}
 			/>
 			<ShadingPicker bind:shading bind:height={shadingH} />
 			<p class="hint muted small" bind:offsetHeight={hintH}>
-				Click to paint, again to cycle Safe → Tilt · right-click resets · scroll/drag to zoom/pan · Esc zooms out
+				Hover a district for its result · scroll/drag to zoom/pan · Esc zooms out
 			</p>
 		{/if}
 	</section>
 
 	<aside>
 		{#if t && map}
-			<SeatSummary tally={t} {parties} />
+			{#if vote}<SeatSummary tally={t} vote={vote.shares} votes={vote.total} {before} {baselineLabel} {parties} />{/if}
 			<SeatSystemPicker bind:system={seatSystem} bind:tactical multiparty={(ctx?.sim?.partyIds.length ?? 0) > 2} />
 			{#if electionInfo?.cells && hasBaseline}
 				<h3>Voter groups</h3>
 				{#if ctx?.sim}<DemographicPanel sim={ctx.sim} cells={electionInfo.cells} bind:swing={demoSwing} bind:parties onfit={fit} />{/if}
-			{/if}
-			{#if Object.keys(ov).length}
-				<button type="button" class="link" onclick={() => (overrides[currentId] = {})}>clear {Object.keys(ov).length} manual ratings</button>
 			{/if}
 
 			<h3>Parties</h3>
@@ -435,7 +400,7 @@
 				<ModelFit fit={fitted[currentId].fit} {parties} />
 			{/if}
 
-			{#if settled}<CompareTable {maps} {bases} {currentId} scenario={settled} {overrides} {seatSystem} />{/if}
+			{#if settled}<CompareTable {maps} {bases} {currentId} scenario={settled} {seatSystem} />{/if}
 
 			{#if focusGroup && groupTally}
 				<StatePanel group={focusGroup} tally={groupTally} {parties} {report} onback={() => (focusGroup = null)} />

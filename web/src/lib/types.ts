@@ -122,18 +122,11 @@ export interface Party {
 export type Level = 1 | 2 | 3 | 4;
 export const RATING_NAMES: Record<Level, string> = { 4: 'Safe', 3: 'Likely', 2: 'Lean', 1: 'Tilt' };
 
-/** Manual rating: party id + level */
-export interface Override {
-	p: string;
-	l: Level;
-}
-
 export interface Outcome {
 	/** winning party id, or null if unrated */
 	winner: string | null;
 	level: Level;
 	unrated: boolean;
-	manual: boolean;
 	/** simulated vote shares (0..1) by party id, if the region has a baseline */
 	shares: Record<string, number> | null;
 	/** winner minus runner-up, in points */

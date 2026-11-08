@@ -32,8 +32,8 @@ try {
 	const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) < tol, `${msg}: ${a} vs ${b}`);
 
 	const M = await vite.ssrLoadModule('/src/lib/model.ts');
-	const ctxOf = (basis, regions, parties, segments = [], ov = {}) =>
-		S.buildContext(basis, regions, { segments, parties }, ov);
+	const ctxOf = (basis, regions, parties, segments = []) =>
+		S.buildContext(basis, regions, { segments, parties });
 	const party = (o) => ({ id: 'p1', name: 'X', color: '#888888', share: 0, states: [], appeals: [], ...o });
 	/** a region's real share of a party */
 	const real = (r, p = 'D') => r.baseline[p] / r.votes;
@@ -98,6 +98,8 @@ try {
 					assert.equal(o.level, S.levelFromMargin(((a1 - a2) / r.votes) * 100), 'level');
 				}
 				assert.equal(S.tally(rs, ctx).seats.D, rs.filter((r) => r.baseline.D > r.baseline.R).length, 'D seats');
+				const pv = S.popularVote(rs, ctx), totalV = rs.reduce((a, r) => a + r.votes, 0);
+				near(pv.shares.D, rs.reduce((a, r) => a + r.baseline.D, 0) / totalV, 1e-6, 'popular vote = the real national vote');
 				// an appeal among everyone moves the party's national share by about that much
 				const up = ctxOf(basis, rs, core.map((p) => (p.id === 'R' ? { ...p, appeals: [{ filter: {}, points: 3 }] } : p)));
 				const dR = (up.sim.group({}).shares.R - ctx.sim.group({}).shares.R) * 100;
@@ -122,9 +124,9 @@ try {
 			// tactical voting: two parties = nothing to do; otherwise votes only move between
 			// parties, the sincere shares are the plain run, and the MMP list vote stays sincere
 			{
-				const plain = ctxOf(basis, rs, core), tac = S.buildContext(basis, rs, { segments: [], parties: core, tactical: true }, {});
+				const plain = ctxOf(basis, rs, core), tac = S.buildContext(basis, rs, { segments: [], parties: core, tactical: true });
 				for (const r of rs) for (const q of ['D', 'R']) assert.equal(S.shares(r, tac)[q], S.shares(r, plain)[q], `${r.id}: tactical is a no-op with two parties`);
-				const tp = S.buildContext(basis, rs, { segments: [], parties, tactical: true }, {});
+				const tp = S.buildContext(basis, rs, { segments: [], parties, tactical: true });
 				let movedAny = false;
 				for (const r of rs) {
 					const sh = S.shares(r, tp), sin = tp.sim.sincere.get(r.id);
@@ -227,10 +229,6 @@ try {
 			console.log(`${id} ${eid}: fit ${fitMs.toFixed(0)}ms | D ${t0s.seats.D} R ${t0s.seats.R} | preset: ` +
 				Object.entries(tm.seats).map(([k, n]) => `${parties.find((q) => q.id === k).name} ${n}`).join(', ') +
 				` | MMP: ${Object.entries(tl.seats).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(' ')} of ${tl.total} | D +5 among 18-29 -> D ${S.tally(rs, cs).seats.D} | demographics only: D ${tDemo.seats.D} R ${tDemo.seats.R} (D ${(demoPopular * 100).toFixed(1)}%) | residual sd ${Math.sqrt(res.reduce((a, x) => a + x * x, 0) / res.length).toFixed(1)} pts`);
-
-			// overrides: an override for an inactive party is ignored
-			assert.equal(S.outcome(r0, ctxOf(basis, rs, core, [], { [r0.id]: { p: 'p2', l: 4 } })).manual, false);
-			assert.equal(S.outcome(r0, ctxOf(basis, rs, parties, [], { [r0.id]: { p: 'p2', l: 4 } })).winner, 'p2');
 		}
 	}
 

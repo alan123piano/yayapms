@@ -6,52 +6,36 @@
 	interface Props {
 		parties: Party[];
 		tally: Tally | null;
-		/** whether the map has election results (else 'auto' just clears) */
-		hasBaseline: boolean;
-		/** selected paint brush: a party id or 'auto' */
-		brush: string;
 		height?: number;
 	}
-	let { parties, tally, hasBaseline, brush = $bindable(), height = $bindable() }: Props = $props();
+	let { parties, tally, height = $bindable() }: Props = $props();
 
-	let brushes = $derived([
-		...spectrumOrder(parties).map((p) => ({ id: p.id, label: p.name, color: p.color, n: tally?.seats[p.id] })),
-		{ id: 'auto', label: hasBaseline ? 'Auto (baseline)' : 'Clear', color: 'transparent', n: undefined }
-	]);
+	/** parties on the ballot: any seat, or the election's own */
+	let shown = $derived(spectrumOrder(parties).filter((p) => p.core || (tally?.seats[p.id] ?? 0) > 0));
 </script>
 
-<div class="legend" role="radiogroup" aria-label="Paint with" bind:offsetHeight={height}>
-	{#each brushes as b (b.id)}
-		<button type="button" role="radio" aria-checked={brush === b.id} class:active={brush === b.id} onclick={() => (brush = b.id)}>
-			<span class="swatch" class:auto={b.id === 'auto'} style:background={b.color}></span>
-			{b.label}
-			{#if b.n !== undefined}<b>{b.n}</b>{/if}
-		</button>
+<ul class="legend" aria-label="Seats by party" bind:offsetHeight={height}>
+	{#each shown as p (p.id)}
+		<li><span class="swatch" style:background={p.color}></span>{p.name}{#if tally}<b>{tally.seats[p.id] ?? 0}</b>{/if}</li>
 	{/each}
-</div>
+</ul>
 
 <style>
 	.legend {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 6px;
-		margin-bottom: 10px;
+		gap: 6px 16px;
+		list-style: none;
+		padding: 0;
+		margin: 0 0 10px;
 	}
-	button {
+	li {
 		display: inline-flex;
 		align-items: center;
 		gap: 8px;
-		padding: 6px 12px;
-		border-radius: 999px;
-	}
-	button.active {
-		border-color: var(--fg);
-		box-shadow: inset 0 0 0 1px var(--fg);
+		padding: 4px 0;
 	}
 	b {
 		font-variant-numeric: tabular-nums;
-	}
-	.swatch.auto {
-		border: 2px dashed var(--muted);
 	}
 </style>

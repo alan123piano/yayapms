@@ -12,12 +12,10 @@
 		fill: (r: Region) => string;
 		/** group (state) to fly to; null = whole map */
 		focusGroup: string | null;
-		/** primary = left click / tap, secondary = right click */
-		onpick: (r: Region, secondary: boolean) => void;
 		onhover: (r: Region | null, x: number, y: number) => void;
 		onunfocus: () => void;
 	}
-	let { map, fill, focusGroup, onpick, onhover, onunfocus }: Props = $props();
+	let { map, fill, focusGroup, onhover, onunfocus }: Props = $props();
 
 	const W = 975;
 	const H = 610;
@@ -237,11 +235,6 @@
 		if (pointers.size === 0) panning = false;
 	}
 
-	function pick(r: Region, secondary: boolean) {
-		if (dragged) return; // end of a pan, not a click
-		onpick(r, secondary);
-	}
-
 	function onkeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') onunfocus();
 	}
@@ -267,12 +260,8 @@
 						{d}
 						class="region"
 						style:fill={fill(r)}
-						role="button"
-						tabindex="0"
+						role="img"
 						aria-label={r.label}
-						onclick={() => pick(r, false)}
-						onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onpick(r, false); } }}
-						oncontextmenu={(e) => { e.preventDefault(); pick(r, true); }}
 						onpointermove={(e) => !dragged && onhover(r, e.clientX, e.clientY)}
 						onpointerleave={() => onhover(null, 0, 0)}
 					/>
@@ -329,15 +318,13 @@
 		/* divide by zoom so lines stay thin; recomputed only on commit */
 		stroke-width: calc(0.5px / var(--k));
 		stroke-linejoin: round;
-		cursor: pointer;
+		cursor: grab;
 		transition: fill 120ms;
-		outline: none;
 	}
 	.dragging .region {
 		cursor: grabbing;
 	}
-	.region:hover,
-	.region:focus-visible {
+	.region:hover {
 		stroke: var(--fg);
 		stroke-width: calc(2px / var(--k));
 	}

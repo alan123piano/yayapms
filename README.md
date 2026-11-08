@@ -19,8 +19,7 @@ make data S="TX NC"   # recompute specific states
 make audit            # supply-chain checks
 ```
 
-In the app: pick a color in the legend, click districts to paint (click again to cycle
-Safe → Likely → Lean → Tilt), right-click to reset. Scroll/drag/pinch to zoom and pan,
+In the app: hover a district for its result. Scroll/drag/pinch to zoom and pan,
 "Jump to state" to fly to a state, Esc or "← United States" to come back.
 
 ## Regenerate data

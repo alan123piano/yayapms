@@ -43,7 +43,7 @@
 			{/each}
 		</div>
 	{/if}
-	<div>{ratingText(o, byId)}{o.manual ? ' (manual)' : ''}</div>
+	<div>{ratingText(o, byId)}</div>
 	{#if r.seats !== 1}<div>{r.seats} seats</div>{/if}
 	{#if hasCells && residual && lead}
 		<div class="muted small parts">

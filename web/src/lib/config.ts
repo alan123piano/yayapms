@@ -4,8 +4,6 @@
 import type { Party } from './types';
 
 // ---------- startup defaults ----------
-/** paint brush selected at startup: a party id, or 'auto' (use the election baseline) */
-export const DEFAULT_BRUSH = 'auto';
 export const DEFAULT_SHADING: ShadingId = 'tiers';
 /** election selected at startup when the map has it (otherwise its newest) */
 export const DEFAULT_ELECTION = 'pres-2020';
@@ -55,8 +53,6 @@ export const GRADIENT_MIN_STRENGTH = 12;
 export const GRADIENT_FULL_AT = 25;
 /** Unexplained mode: unexplained share (points) that reaches full color */
 export const RESIDUAL_FULL_AT = 20;
-/** stand-in margin per level for hand-painted districts in Gradient mode */
-export const TIER_TYPICAL_MARGIN = [0, 1.5, 5.5, 11.5, 20];
 
 // ---------- voter groups (demographic swings) ----------
 /** slider limits: (older links') vote swing in margin points, turnout change in %, appeal in points */

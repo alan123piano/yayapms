@@ -2,7 +2,7 @@
 	import { spectrumOrder } from './parties';
 	import type { Basis, Scenario } from './model';
 	import { buildContext, tally, type SeatSystem } from './sim';
-	import type { LoadedMap, Override } from './types';
+	import type { LoadedMap } from './types';
 
 	interface Props {
 		/** all loaded maps, with results for the selected election */
@@ -11,10 +11,9 @@
 		bases: Record<string, Basis>;
 		currentId: string;
 		scenario: Scenario;
-		overrides: Record<string, Record<string, Override>>;
 		seatSystem: SeatSystem;
 	}
-	let { maps, bases, currentId, scenario, overrides, seatSystem }: Props = $props();
+	let { maps, bases, currentId, scenario, seatSystem }: Props = $props();
 	let parties = $derived(scenario.parties);
 
 
@@ -28,7 +27,7 @@
 			.filter((m) => m.regions.some((r) => r.baseline))
 			.map((m) => {
 				const rs = m.regions.filter((r) => scope.has(r.group));
-				const c = buildContext(bases[m.manifest.id], rs, scenario, overrides[m.manifest.id] ?? {});
+				const c = buildContext(bases[m.manifest.id], rs, scenario);
 				return { id: m.manifest.id, name: m.manifest.name, t: tally(rs, c, seatSystem) };
 			});
 	});
