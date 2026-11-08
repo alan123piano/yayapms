@@ -1,4 +1,5 @@
 import { cellEffects, cellLabels, filterKey, matches, type Filter, type Segment } from './demographics';
+import { TACTICAL } from './config';
 import type { CellData, LocalData, Party, Region } from './types';
 
 /*
@@ -25,6 +26,9 @@ import type { CellData, LocalData, Party, Region } from './types';
  *    c. Extra parties win voters away from each baseline party. A voter of party k in cell c
  *       stays or defects to party p with softmax odds exp(η_p,c + pull_p,k): η from its base
  *       share and its appeals, pull from how strongly it attracts k's voters ("pulls from").
+ *    d. Tactical voting (optional): in each district, one round of voters reacting to the
+ *       sincere result above as their poll (see tacticalFlows). It never feeds back, so it has
+ *       one answer and no history; national bandwagons are the party shares you set.
  *    Every combination of inputs is valid; the outputs are the vote shares.
  * With no edits and no extra parties this reproduces the real results exactly.
  */
@@ -554,6 +558,8 @@ export interface Scenario {
 	/** voter groups: turnout changes (and the custom groups' definitions) */
 	segments: Segment[];
 	parties: Party[];
+	/** voters of trailing parties partly switch to a viable party they like (tacticalFlows) */
+	tactical?: boolean;
 }
 
 export interface Simulation {
@@ -564,6 +570,8 @@ export interface Simulation {
 	shares: Map<string, Record<string, number>>;
 	/** per region: number of voters */
 	votes: Map<string, number>;
+	/** with tactical voting: per region, the vote shares before it (what a list vote would be) */
+	sincere?: Map<string, Record<string, number>>;
 	/** national totals for the voters matching a filter */
 	group(f: Filter): GroupResult;
 }
@@ -650,6 +658,60 @@ export function calibratedShift(b: Basis, k: number, f: Filter, points: number):
 	return d;
 }
 
+/** standard normal CDF (Abramowitz & Stegun 7.1.26, error < 2e-7) */
+function normalCdf(x: number): number {
+	const z = Math.abs(x) / Math.SQRT2, t = 1 / (1 + 0.3275911 * z);
+	const erf = 1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-z * z);
+	return x >= 0 ? (1 + erf) / 2 : (1 - erf) / 2;
+}
+
+/**
+ * How alike two parties' voters are, for every pair: the cosine of their "pulls from" vectors
+ * over the baseline parties (a baseline party is its own unit vector). Labour-like and a party
+ * pulling mostly from Labour are close; two baseline parties are 0 apart from each other.
+ */
+export function affinity(vectors: number[][]): number[][] {
+	const norm = vectors.map((v) => Math.hypot(...v));
+	return vectors.map((a, i) =>
+		vectors.map((c, j) => (i === j || !norm[i] || !norm[j] ? 0 : a.reduce((x, ak, k) => x + ak * c[k], 0) / (norm[i] * norm[j])))
+	);
+}
+
+/**
+ * One district's tactical voting, from its sincere shares s (0..1, per party) and the parties'
+ * affinity: flows[a][q] = the fraction of a's voters who switch to q. Every party is treated
+ * the same way; all flows are computed at once from the sincere result.
+ *   viability v_p = Φ((s_p - t_p) / (σ√2)), t_p the second-best share among the others: how
+ *     likely p is to be in the top two, given local uncertainty σ
+ *   closeness κ = 2(1 - Φ((s_1 - s_2) / (σ√2))): 1 when the top two are tied, ~0 when the
+ *     seat is not in doubt (then a vote is wasted either way, so nobody switches)
+ *   a's voters lean to q by g = affinity(a, q) · max(0, v_q - v_a): only toward a more viable
+ *     party they like; two parties level with each other trade nothing
+ *   a loses τ · κ · (1 - Π_q (1 - g_q)) of its voters (τ: the share willing to vote
+ *     tactically), split over q in proportion to g_q
+ */
+export function tacticalFlows(s: number[], aff: number[][], tau = TACTICAL.willing, sigma = TACTICAL.uncertainty): number[][] {
+	const P = s.length;
+	const flows = s.map(() => new Array<number>(P).fill(0));
+	if (P < 3) return flows;
+	const order = s.map((_, i) => i).sort((a, c) => s[c] - s[a]);
+	const scale = sigma * Math.SQRT2;
+	const kappa = 2 * (1 - normalCdf((s[order[0]] - s[order[1]]) / scale));
+	if (kappa < 1e-9) return flows;
+	// t_p, the second-best share among the others: the third-best if p is in the top two
+	const top2 = new Set(order.slice(0, 2));
+	const v = s.map((x, p) => normalCdf((x - s[order[top2.has(p) ? 2 : 1]]) / scale));
+	for (let a = 0; a < P; a++) {
+		if (!s[a]) continue;
+		const g = v.map((vq, q) => (q === a ? 0 : aff[a][q] * Math.max(0, vq - v[a])));
+		const G = g.reduce((x, y) => x + y, 0);
+		if (!G) continue;
+		const out = tau * kappa * (1 - g.reduce((x, y) => x * (1 - y), 1));
+		for (let q = 0; q < P; q++) flows[a][q] = (out * g[q]) / G;
+	}
+	return flows;
+}
+
 export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation {
 	const { n, labels, parties: base } = b;
 	const K = base.length;
@@ -693,8 +755,19 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 	});
 	const runs = extras.map((p) => (p.states.length ? new Set(p.states) : null));
 	const partyIds = [...base, ...extras.map((p) => p.id)];
+	const P = partyIds.length;
+	const aff = sc.tactical && P > 2
+		? affinity([
+			...base.map((_, k) => base.map((__, q) => (q === k ? 1 : 0))),
+			...extras.map((p) => base.map((id) => Math.max(0, pullsOf(p, base)[id])))
+		])
+		: null;
 
 	const shares = new Map<string, Record<string, number>>();
+	const sincere = aff ? new Map<string, Record<string, number>>() : undefined;
+	/** this district's votes per party (baseline parties, then extras) and cell */
+	const loc = partyIds.map(() => new Float64Array(n));
+	const moved = new Float64Array(P);
 	const votesBy = new Map<string, number>();
 	const cellParty: Record<string, Float64Array> = Object.fromEntries(partyIds.map((id) => [id, new Float64Array(n)]));
 	const cellV = new Float64Array(n), cellC = new Float64Array(n);
@@ -722,7 +795,7 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 		// extra parties take their defectors from each baseline party
 		const on = extras.flatMap((_, j) => (!runs[j] || runs[j]!.has(rb.group) ? [j] : []));
 		const stay = -Math.log(Math.max(0.05, 1 - on.reduce((a, j) => a + extras[j].share / 100, 0)));
-		const acc: Record<string, number> = Object.fromEntries(partyIds.map((id) => [id, 0]));
+		for (const x of loc) x.fill(0);
 		let V = 0;
 		for (let i = 0; i < n; i++) {
 			baseV[i] += rb.V[i];
@@ -734,19 +807,37 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 				if (!L) continue;
 				let s = 1;
 				for (const j of on) { odds[j] = Math.exp(clampLim(eta[j][i] + pull[j][k] + stay)); s += odds[j]; }
-				acc[base[k]] += L / s;
-				cellParty[base[k]][i] += L / s;
-				for (const j of on) {
-					const v = (L * odds[j]) / s;
-					acc[extras[j].id] += v;
-					cellParty[extras[j].id][i] += v;
-				}
+				loc[k][i] += L / s;
+				for (const j of on) loc[K + j][i] += (L * odds[j]) / s;
 			}
 			V += Vp[i];
 			cellV[i] += Vp[i];
 		}
-		if (V > 0) for (const id of partyIds) acc[id] /= V;
-		shares.set(rb.id, acc);
+		const tot = loc.map(sum);
+		if (aff && V > 0) {
+			// every cell of the district switches at the district's rates
+			const flows = tacticalFlows(tot.map((x) => x / V), aff);
+			sincere!.set(rb.id, Object.fromEntries(partyIds.map((id, q) => [id, tot[q] / V])));
+			for (let i = 0; i < n; i++) {
+				moved.fill(0);
+				for (let a = 0; a < P; a++) {
+					const x = loc[a][i];
+					if (!x) continue;
+					for (let q = 0; q < P; q++) {
+						if (!flows[a][q]) continue;
+						moved[a] -= x * flows[a][q];
+						moved[q] += x * flows[a][q];
+					}
+				}
+				for (let q = 0; q < P; q++) loc[q][i] += moved[q];
+			}
+			for (let q = 0; q < P; q++) tot[q] = sum(loc[q]);
+		}
+		for (let q = 0; q < P; q++) {
+			const c = cellParty[partyIds[q]];
+			for (let i = 0; i < n; i++) c[i] += loc[q][i];
+		}
+		shares.set(rb.id, Object.fromEntries(partyIds.map((id, q) => [id, V > 0 ? tot[q] / V : 0])));
 		votesBy.set(rb.id, V);
 	}
 
@@ -756,6 +847,7 @@ export function simulate(b: Basis, regions: Region[], sc: Scenario): Simulation 
 		baselineParties: base,
 		shares,
 		votes: votesBy,
+		...(sincere ? { sincere } : {}),
 		group(f) {
 			const m = membership(labels, f);
 			let v = 0, c = 0, bv = 0, bc = 0;

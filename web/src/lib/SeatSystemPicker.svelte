@@ -4,8 +4,12 @@
 
 	interface Props {
 		system: SeatSystem;
+		/** voters of trailing parties partly switch to a viable party they like (model.tacticalFlows) */
+		tactical: boolean;
+		/** more than two parties on the ballot (otherwise tactical voting changes nothing) */
+		multiparty: boolean;
 	}
-	let { system = $bindable() }: Props = $props();
+	let { system = $bindable(), tactical = $bindable(), multiparty }: Props = $props();
 
 	const MMP_DEFAULT: SeatSystem = { kind: 'mmp', listSeats: 100, threshold: 5, waiver: 1, overhang: 'level' };
 	const LIST = stepped(0, 200, 10);
@@ -25,6 +29,16 @@
 		title="Mixed-member proportional: districts by FPTP, plus list seats that make the house proportional"
 		onclick={() => { if (system.kind !== 'mmp') system = MMP_DEFAULT; }}>MMP</button>
 </div>
+{#if multiparty}
+	<div class="systems" role="radiogroup" aria-label="How people vote">
+		<span class="muted small">Votes</span>
+		<button type="button" role="radio" aria-checked={!tactical} class:active={!tactical}
+			title="Everyone votes for the party they like best" onclick={() => (tactical = false)}>Sincere</button>
+		<button type="button" role="radio" aria-checked={tactical} class:active={tactical}
+			title="In districts with a close race, some voters of a party out of contention switch to a viable party they like (how alike parties are follows their 'pulls from'). One round, reacting to the sincere result; the MMP list vote stays sincere."
+			onclick={() => (tactical = true)}>Tactical</button>
+	</div>
+{/if}
 {#if mmp}
 	<div class="opts">
 		<label>

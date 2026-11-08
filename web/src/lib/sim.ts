@@ -111,11 +111,12 @@ export function tally(regions: Region[], ctx: SimContext, system: SeatSystem = F
 	const t = districtTally(regions, ctx);
 	if (system.kind === 'fptp') return t;
 
-	// national list vote: simulated votes over the regions in scope
+	// national list vote: simulated votes over the regions in scope, as cast before any tactical
+	// voting (the list vote decides nothing locally, so nobody votes tactically in it)
 	const raw: Record<string, number> = Object.fromEntries(ctx.parties.map((p) => [p.id, 0]));
 	let all = 0;
 	for (const r of regions) {
-		const sh = ctx.sim?.shares.get(r.id);
+		const sh = (ctx.sim?.sincere ?? ctx.sim?.shares)?.get(r.id);
 		const v = ctx.sim?.votes.get(r.id) ?? 0;
 		if (!sh) continue;
 		for (const [id, x] of Object.entries(sh)) if (id in raw) raw[id] += v * x;

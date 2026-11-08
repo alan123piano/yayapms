@@ -31,6 +31,11 @@ export const EXAMPLE_PARTIES: Party[] = [
 /** colors offered to newly added parties, in order */
 export const NEW_PARTY_COLORS = ['#2aa876', '#f2a900', '#13a8c4', '#9c5b2e', '#8e44ad', '#e67e22', '#7f8c8d'];
 
+// ---------- tactical voting (model.tacticalFlows) ----------
+/** willing: most of a party's voters who would switch, in a tied seat with a clearly viable
+ *  party they like; uncertainty: how unsure voters are of the local standings (share, 0..1) */
+export const TACTICAL = { willing: 0.5, uncertainty: 0.07 };
+
 // ---------- ratings ----------
 /** lead (points) where Tilt -> Lean -> Likely -> Safe */
 export const RATING_THRESHOLDS = [3, 8, 15] as const;

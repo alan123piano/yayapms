@@ -119,6 +119,27 @@ try {
 				if (r.group !== 'TX') assert.equal(sh.p4 ?? 0, 0, 'regional party outside TX');
 			}
 			const tm = S.tally(rs, ctx);
+			// tactical voting: two parties = nothing to do; otherwise votes only move between
+			// parties, the sincere shares are the plain run, and the MMP list vote stays sincere
+			{
+				const plain = ctxOf(basis, rs, core), tac = S.buildContext(basis, rs, { segments: [], parties: core, tactical: true }, {});
+				for (const r of rs) for (const q of ['D', 'R']) assert.equal(S.shares(r, tac)[q], S.shares(r, plain)[q], `${r.id}: tactical is a no-op with two parties`);
+				const tp = S.buildContext(basis, rs, { segments: [], parties, tactical: true }, {});
+				let movedAny = false;
+				for (const r of rs) {
+					const sh = S.shares(r, tp), sin = tp.sim.sincere.get(r.id);
+					near(Object.values(sh).reduce((a, b) => a + b, 0), 1, 1e-9, `${r.id}: tactical shares sum`);
+					for (const [q, x] of Object.entries(S.shares(r, ctx))) near(sin[q], x, 1e-12, `${r.id}: sincere = untactical run`);
+					if (Object.keys(sh).some((q) => Math.abs(sh[q] - sin[q]) > 1e-3)) movedAny = true;
+				}
+				assert.ok(movedAny, 'tactical voting moves votes somewhere');
+				const g = tp.sim.group({}), gs = ctx.sim.group({});
+				near(Object.values(g.shares).reduce((a, b) => a + b, 0), 1, 1e-9, 'tactical national shares sum');
+				near(g.voterShare, gs.voterShare, 1e-12, 'tactical voting changes no turnout');
+				const mmp = { kind: 'mmp', listSeats: 100, threshold: 5, waiver: 1, overhang: 'level' };
+				const lv = S.tally(rs, tp, mmp).mmp.vote, sv = S.tally(rs, ctx, mmp).mmp.vote;
+				for (const q of Object.keys(sv)) near(lv[q], sv[q], 1e-12, `MMP list vote of ${q} stays sincere`);
+			}
 			// a new party with neutral pulls and no appeals wins exactly its base share everywhere
 			const flat = ctxOf(basis, rs, [...core, party({ share: 12 })]);
 			for (const r of rs.slice(0, 20)) near(S.shares(r, flat).p1, 0.12, 1e-9, `${r.id}: base share exact`);
@@ -271,6 +292,32 @@ try {
 	const leg2 = P.sanitizeParties([...P.coreParties(), { id: 'p1', name: 'Y', share: 5, fromD: 50, states: [], appeals: [{ filter: { race: ['Hispanic'] }, share: 30 }, { filter: {}, points: 4 }, { filter: { planet: 'x' }, points: 3 }] }]);
 	assert.deepEqual(leg2[2].appeals, [{ filter: { race: ['Hispanic'] }, points: 0, target: 30 }, { filter: {}, points: 4 }], 'targets kept for fitting; points kept; malformed dropped');
 	assert.equal(leg[2].share, 0, 'legacy audience party wins nothing elsewhere');
+
+	// tactical voting, one district (model.tacticalFlows): A and B alike, C apart
+	{
+		const aff = [[0, 0.9, 0], [0.9, 0, 0], [0, 0, 0]];
+		const f = (s) => M.tacticalFlows(s, aff);
+		const sq = f([0.2, 0.38, 0.42]);
+		assert.ok(sq[0][1] > 0.1, 'a trailing party is squeezed toward a viable ally in a close seat');
+		assert.equal(sq[0][2], 0, '...never toward a party its voters do not like');
+		assert.ok(sq[1].every((x) => x === 0) && sq[2].every((x) => x === 0), 'nobody switches toward a less viable party');
+		const tie = f([0.29, 0.29, 0.42]);
+		assert.ok(tie.flat().every((x) => x === 0), 'two parties level for second trade nothing (no coordination)');
+		const safe = f([0.15, 0.2, 0.65]);
+		assert.ok(safe.flat().every((x) => x < 1e-6), 'no squeeze in a seat that is not in doubt');
+		const ab = f([0.25, 0.33, 0.42]), ba = f([0.33, 0.25, 0.42]);
+		near(ab[0][1], ba[1][0], 1e-12, 'symmetric parties: swapping their shares mirrors the flows');
+		for (const s of [[0.2, 0.38, 0.42], [0.3, 0.31, 0.39], [0.05, 0.47, 0.48]]) {
+			assert.ok(f(s).every((row) => row.every((x) => x >= 0) && row.reduce((a, b) => a + b, 0) <= 0.5 + 1e-12), 'at most the willing share switches');
+		}
+		// continuity: sweeping A past B moves the flows smoothly
+		let prev = null;
+		for (let x = 0.2; x <= 0.36; x += 0.002) {
+			const fl = f([x, 0.56 - x, 0.44]), net = fl[0][1] * x - fl[1][0] * (0.56 - x);
+			if (prev !== null) assert.ok(Math.abs(net - prev) < 0.01, `tactical flows continuous at A=${x.toFixed(3)}`);
+			prev = net;
+		}
+	}
 
 	// voter-group links and keys
 	assert.equal(G.filterKey({ sex: ['Men'], age: ['30-44', '18-29'] }), G.filterKey({ age: ['18-29', '30-44'], sex: ['Men'] }), 'filterKey order-independent');

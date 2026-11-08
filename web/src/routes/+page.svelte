@@ -41,6 +41,8 @@
 	let parties = $state<Party[]>(coreParties());
 	/** how seats are assigned: FPTP, or mixed-member proportional */
 	let seatSystem = $state<SeatSystem>(FPTP);
+	/** voters of trailing parties partly switch to a viable party they like */
+	let tactical = $state(false);
 	/** manual ratings per map id, then region id */
 	let overrides = $state<Record<string, Record<string, Override>>>({});
 	let focusGroup = $state<string | null>(null);
@@ -113,7 +115,7 @@
 		) as Record<string, Basis>
 	);
 	let maps = $derived(electionMaps);
-	let scenario = $derived<Scenario>({ segments: demoSwing.segments, parties });
+	let scenario = $derived<Scenario>({ segments: demoSwing.segments, parties, tactical });
 	/** the scenario for the Compare maps table: it re-runs every map, so it follows the
 	 *  scenario only once a slider has been still for a moment (not on every drag step) */
 	let settled = $state.raw<Scenario | null>(null);
@@ -223,6 +225,7 @@
 			const m = seatSystem;
 			p.set('seats', `mmp:${m.listSeats}:${m.threshold}:${m.waiver}:${m.overhang}`);
 		}
+		if (tactical) p.set('tactical', '1');
 		if (parties.length > 2 || parties.some((x) => x.appeals.length)) p.set('parties', JSON.stringify(parties.map(({ core, ...rest }) => rest)));
 		if (isActive(demoSwing)) p.set('groups', JSON.stringify(demoSwing));
 		return p.toString();
@@ -261,6 +264,7 @@
 				waiver: Number(seats[3]), overhang: seats[4] as 'keep' | 'level'
 			};
 		}
+		tactical = p.get('tactical') === '1';
 		pendingGroups = p.get('groups');
 		try {
 			const ps = sanitizeParties(JSON.parse(p.get('parties') ?? 'null'));
@@ -409,7 +413,7 @@
 	<aside>
 		{#if t && map}
 			<SeatSummary tally={t} {parties} />
-			<SeatSystemPicker bind:system={seatSystem} />
+			<SeatSystemPicker bind:system={seatSystem} bind:tactical multiparty={(ctx?.sim?.partyIds.length ?? 0) > 2} />
 			{#if electionInfo?.cells && hasBaseline}
 				<h3>Voter groups</h3>
 				{#if ctx?.sim}<DemographicPanel sim={ctx.sim} cells={electionInfo.cells} bind:swing={demoSwing} bind:parties onfit={fit} />{/if}
