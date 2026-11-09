@@ -346,6 +346,23 @@ try {
 	const m = L.buildMap(g.manifest, fc, { voteProps: { dem: g.dem, rep: g.rep } });
 	near(real(m.regions[0]), 2 / 3, 1e-9, 'import share');
 	assert.throws(() => L.parseGeo('{"type":"Nope"}'));
+
+	// share links: compressed hash round-trips, stays short, old plain links still parse, junk is rejected
+	const H = await vite.ssrLoadModule('/src/lib/hashState.ts');
+	const parties = JSON.stringify(Array.from({ length: 5 }, (_, i) => ({
+		id: `p${i}`, name: `Party ${i}`, color: '#123456', share: 10, states: [],
+		appeals: [{ filter: { edu: ['College'] }, points: -16 }, { filter: { race: ['Black'] }, points: 6 }]
+	})));
+	const state = new URLSearchParams({ map: 'us-house-current', election: 'house-2026', parties });
+	const packed = await H.packHash(state);
+	assert.match(packed, /^s=[A-Za-z0-9_-]+$/);
+	assert.ok(packed.length < state.toString().length / 3, `packed hash ${packed.length} vs plain ${state.toString().length}`);
+	assert.deepEqual([...(await H.unpackHash(packed))], [...state]);
+	assert.deepEqual([...(await H.unpackHash(state.toString()))], [...state]);
+	assert.deepEqual([...(await H.unpackHash('s=not*base64'))], []);
+	const bomb = new URLSearchParams({ x: 'a'.repeat(200_000) });
+	assert.deepEqual([...(await H.unpackHash(await H.packHash(bomb)))], []);
+	console.log('share link OK');
 	console.log('smoke OK');
 } finally {
 	await vite.close();

@@ -21,6 +21,7 @@
 		type ShadingId
 	} from '#lib/config.ts';
 	import { describe, emptySwing, filterKey, isActive, sanitizeSwing, type GroupOption } from '#lib/demographics.ts';
+	import { packHash, unpackHash } from '#lib/hashState.ts';
 	import { electionParties, loadPack, withElection } from '#lib/loader.ts';
 	import { BASELINE_VARIANTS, baselineFor, fitAppeal, fitBasis, unexplained, type Basis, type BaselineVariant, type Scenario } from '#lib/model.ts';
 	import { coreParties, sanitizeParties, withElectionParties } from '#lib/parties.ts';
@@ -216,7 +217,7 @@
 	// ---------- persistence: URL hash (shareable state) + localStorage (preferences) ----------
 	const STORAGE_KEY = 'yayapms.parties.v2';
 
-	function encodeHash(): string {
+	function hashParams(): URLSearchParams {
 		const p = new URLSearchParams({ map: currentId, election });
 		if (variant !== 'real') p.set('baseline', variant);
 		if (focusGroup) p.set('focus', focusGroup);
@@ -227,15 +228,15 @@
 		if (tactical) p.set('tactical', '1');
 		if (parties.length > 2 || parties.some((x) => x.appeals.length)) p.set('parties', JSON.stringify(parties.map(({ core, ...rest }) => rest)));
 		if (isActive(demoSwing)) p.set('groups', JSON.stringify(demoSwing));
-		return p.toString();
+		return p;
 	}
 
 	/** voter-group swing from the hash; validated once the maps (and their groups) are loaded */
 	let pendingGroups: string | null = null;
 
 	/** apply state from the URL hash; returns the map id it names, if any */
-	function readHash(): string | null {
-		const p = new URLSearchParams(location.hash.slice(1));
+	async function readHash(): Promise<string | null> {
+		const p = await unpackHash(location.hash.slice(1));
 		const e = p.get('election');
 		if (e && /^[a-z0-9-]{1,40}$/.test(e)) election = e;
 		const sw = Number(p.get('swing'));
@@ -263,9 +264,14 @@
 		return id;
 	}
 
+	let hashWrites = 0;
 	$effect(() => {
 		if (!currentId || currentId.startsWith('import-')) return;
-		history.replaceState(null, '', '#' + encodeHash());
+		const p = hashParams();
+		const n = ++hashWrites;
+		packHash(p).then((h) => {
+			if (n === hashWrites) history.replaceState(null, '', '#' + h); // skip stale writes
+		});
 	});
 
 	$effect(() => {
@@ -280,7 +286,7 @@
 			if (ps) parties = ps;
 			if (SHADINGS.some((x) => x.id === saved?.shading)) shading = saved.shading;
 		} catch { /* ignore */ }
-		const fromHash = readHash(); // hash wins over saved prefs
+		const fromHash = await readHash(); // hash wins over saved prefs
 		try {
 			index = await (await fetch('maps/index.json')).json();
 		} catch {
