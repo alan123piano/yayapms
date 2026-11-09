@@ -59,7 +59,7 @@
 	<tbody>
 		{#each rows as { p, seats, vote: v } (p.id)}
 			<tr>
-				<td class="party"><span class="swatch" style:background={p.color}></span><span class="name">{p.name}</span></td>
+				<td class="party"><div class="label"><span class="swatch" style:background={p.color}></span><span class="name">{p.name}</span></div></td>
 				<td class="num seats" title={t.mmp ? `${t.mmp.districts[p.id] ?? 0} districts + ${t.mmp.list[p.id] ?? 0} list` : undefined}>{seats}</td>
 				<td class="num delta">{isNew(p) ? 'new' : signed(seats - (before!.tally.seats[p.id] ?? 0))}</td>
 				<td class="num">{pct(v)}{#if t.mmp && !t.mmp.eligible.includes(p.id)}<sup>*</sup>{/if}</td>
@@ -68,7 +68,7 @@
 		{/each}
 		{#if t.unrated}
 			<tr title="No result for this election">
-				<td class="party"><span class="swatch" style:background="var(--unrated)"></span><span class="name">No result</span></td>
+				<td class="party"><div class="label"><span class="swatch" style:background="var(--unrated)"></span><span class="name">No result</span></div></td>
 				<td class="num seats">{t.unrated}</td><td></td><td></td><td></td>
 			</tr>
 		{/if}
@@ -132,10 +132,13 @@
 		padding: 3px 0 3px 6px;
 	}
 	td.party {
+		padding-left: 0;
+	}
+	/* flex lives on an inner box: a display:flex <td> stops being a table cell and its border misaligns */
+	.label {
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		padding-left: 0;
 		min-width: 0;
 	}
 	.name {
