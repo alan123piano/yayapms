@@ -282,9 +282,9 @@
 		} catch { /* ignore */ }
 		const fromHash = readHash(); // hash wins over saved prefs
 		try {
-			index = await (await fetch('/maps/index.json')).json();
+			index = await (await fetch('maps/index.json')).json();
 		} catch {
-			error = 'Could not load /maps/index.json — run `make data` first.';
+			error = 'Could not load maps/index.json — run `make data` first.';
 			return;
 		}
 		const first = index.find((m) => m.id === fromHash)?.id ?? index[0]?.id;

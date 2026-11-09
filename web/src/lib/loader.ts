@@ -175,10 +175,10 @@ export function decodeCells(
 	return { dims: head.dims, order: head.order, parties: head.parties, results };
 }
 
-/** Load a built-in pack from /maps/<id>/manifest.json */
+/** Load a built-in pack from maps/<id>/manifest.json */
 export async function loadPack(id: string): Promise<LoadedMap> {
 	if (!/^[a-z0-9-]+$/i.test(id)) throw new Error('bad pack id');
-	const base = `/maps/${id}/`;
+	const base = `maps/${id}/`; // document-relative so the site works under any path prefix (e.g. GitHub Pages /yayapms/)
 	const manifest: MapManifest = JSON.parse(await fetchText(base + 'manifest.json'));
 	const file = (f: string) => {
 		if (!SAFE_PATH.test(f) || f.includes('..')) throw new Error(`bad file path in manifest: ${f}`);
